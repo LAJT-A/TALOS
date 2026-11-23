@@ -39,11 +39,13 @@ import ui
 # ======================= AJUSTES =======================
 MIC_INDEX = 1
 LANGUAGES = ("en-US", "es-VE")   # Google escucha en los dos a la vez y se queda con el mejor
-WAKE_ENABLED = True              # escuchar siempre la palabra "Jarvis"
+WAKE_ENABLED = True              # escuchar siempre la palabra "Jarvis" o "Talos"
 GOOGLE_TIMEOUT = 6               # segundos maximos esperando a Google
 WAKE_WORDS = ("jarvis", "jarves", "jarvas", "jarvish", "travis", "yarvis", "harvis", "jarviz",
               "garvis", "jarbi", "jarvi", "jarvez", "yarbi", "harvey's", "jarvis's",
-              "jarbis", "yarbis", "jervis", "charvis")
+              "jarbis", "yarbis", "jervis", "charvis",
+              # tambien responde a "Talos" (sin parecidos sueltos: "que tal" no lo debe despertar)
+              "talos", "thalos", "tallos", "talus", "telos", "tālos", "talo's", "taloss")
 FOLLOW_UP_SECONDS = 8            # tras responder, sigue escuchando sin que lo actives
 END_WORDS = r"^(thanks|thank you|that's all|that is all|never mind|nevermind|gracias|eso es todo|nada mas|ya esta|listo)$"
 
@@ -126,7 +128,7 @@ read messages   (reads the latest WhatsApp messages out loud)
 whatsapp reply to <name>: <message>   (sends a WhatsApp to that contact, also to start a chat; <name> is a person or a group, as named in WhatsApp; a nickname or part of the name works; write the message exactly as the user wants it sent, in the user's own language, never translated)
 phone volume up | phone volume down | phone volume <0-100>   (music playing on the phone; use the number when the user gives a percentage)"""
 
-SYSTEM_PROMPT = ("You are Jarvis, a helpful voice assistant on the user's Windows PC. "
+SYSTEM_PROMPT = ("You are Jarvis, also called Talos, a helpful voice assistant on the user's Windows PC. "
                  "The user may speak Spanish or English, but always reply in English. "
                  "Your replies are read aloud: use plain text, no markdown, lists or emojis, "
                  "and keep them to at most three short sentences unless asked for more. "
@@ -866,7 +868,7 @@ def listen(seconds=6, idle=False):
 
 
 def strip_wake(text):
-    """Quita 'Jarvis' (o algo parecido) del principio."""
+    """Quita 'Jarvis' o 'Talos' (o algo parecido) del principio."""
     text = text.lower().strip(" ,.")
     words = text.split()
     for i, word in enumerate(words[:5]):

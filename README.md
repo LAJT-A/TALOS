@@ -20,7 +20,7 @@ tus apps, tu música, tu WhatsApp y hasta tu celular.
 
 | | |
 |---|---|
-| 🗣️ **Habla contigo** | Dices "Jarvis" (o aplaudes, o haces clic en el anillo) y te escucha. Entiende español e inglés y responde en voz alta. Después de contestar sigue escuchando, sin que tengas que volver a llamarlo. |
+| 🗣️ **Habla contigo** | Dices "Talos" o "Jarvis" (o aplaudes, o haces clic en el anillo) y te escucha. Entiende español e inglés y responde en voz alta. Después de contestar sigue escuchando, sin que tengas que volver a llamarlo. |
 | 🧠 **Razona, no solo obedece** | No hace falta decir órdenes exactas. Una IA local (Gemma en Ollama) entiende lo que quieres, elige las acciones y, si algo falla, lo intenta de otra forma. |
 | 🖥️ **Controla tu PC** | Abre y cierra cualquier app, carpeta o página, escribe, pulsa teclas, hace clic en botones por su nombre, busca archivos y maneja ventanas. |
 | 👀 **Mira tu pantalla** | "¿Qué estoy viendo?": toma una captura y te la explica. Puedes seguir preguntando sobre ella. |
@@ -92,7 +92,7 @@ venv\Scripts\python -c "import sounddevice as sd; print(sd.query_devices())"
 
 | Dices | TALOS |
 |---|---|
-| "Jarvis, abre Visual Studio Code" | Lo abre, aunque digas "vscode". |
+| "Talos, abre Visual Studio Code" | Lo abre, aunque digas "vscode". |
 | "Busca en Spotify la nave del olvido y ponle play" | La busca y la pone. |
 | "¿Qué hay en mi pantalla?" | Toma una captura y te la describe. |
 | "Abre el bloc de notas y escribe una lista de compras" | Encadena las dos cosas. |
