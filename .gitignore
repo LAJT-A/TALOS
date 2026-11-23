@@ -1,0 +1,21 @@
+# Entorno de Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Modelo de voz (lo descarga scripts/instalar.bat)
+*.onnx
+*.onnx.json
+
+# Datos que TALOS genera en tu PC
+screenshots/
+audios/
+iconos/
+tts.wav
+notes.txt
+contactos.json
+*.log
+
+# Ajustes personales
+ajustes_locales.py
