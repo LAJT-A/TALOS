@@ -66,6 +66,7 @@ WHATSAPP_ANNOUNCE = True
 BOT_ENABLED = True
 BOT_WORDS = ("jarvis", "talos")
 BOT_MINUTES = 30
+BOT_SWEARING = False                    # el bot habla como un pana: groserías, jerga y chalequeo permitidos
 BOT_WINDOW = True                       # ventana aparte con los chats del bot (False: solo esta consola)
 OWNER_NAME = ""                  # tu nombre, para que el bot diga de parte de quien habla         # avisar por las bocinas cuando llega un WhatsApp (solo dice de quien)
 PHONE_ALOUD = False              # True: lo que pidas desde el celular tambien se responde por las bocinas
@@ -2096,7 +2097,11 @@ def media_picture(m):
 def bot_reply(session, text, picture=None):
     """Lo que contesta el bot. Solo conversa: nunca ejecuta acciones en tu PC."""
     owner = OWNER_NAME or "my owner"
-    system = (f"You are Talos, also called Jarvis, the personal AI assistant of {owner}. You are chatting on "
+    style = ("Talk like a close friend from Venezuela: casual, with slang and swear words (groserías like marico, "
+             "coño, verga) when they fit, and teasing or roasting jokes are welcome. Don't be formal or preachy, "
+             "don't lecture, and don't refuse a joke just because it is crude. "
+             if BOT_SWEARING else "")
+    system = (style +f"You are Talos, also called Jarvis, the personal AI assistant of {owner}. You are chatting on "
               f"WhatsApp with {session['name']}, a contact of {owner}. Reply in the same language they write in, "
               "short and natural like a WhatsApp message, friendly, with a bit of humor. You cannot do anything on "
               f"{owner}'s computer or phone from this chat and must not pretend to. Never share {owner}'s private "
