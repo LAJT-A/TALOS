@@ -17,6 +17,7 @@ _client = None
 _lock = threading.Lock()
 _chats = {"time": 0.0, "list": []}       # (nombre, jid) de contactos y grupos
 _seen = {}                               # jid -> nombre de quien escribio hace poco
+bot_ids = set()                          # IDs de los mensajes que mando el bot (para saber si le responden a el)
 
 
 def ready():
@@ -136,7 +137,7 @@ def _incoming(cl, ev, on_message):
              else "video" if msg.HasField("videoMessage") else None)
     raw = (msg.conversation or msg.extendedTextMessage.text or msg.imageMessage.caption
            or msg.videoMessage.caption or "")
-    quoted, quoted_kind, quoted_text = _quoted(msg)
+    quoted, quoted_kind, quoted_text, quoted_id = _quoted(msg)
     if src.IsFromMe and not raw.lstrip().startswith("."):
         return  # lo tuyo solo interesa si es una orden para el bot (".jarvis ...", ".stop")
     text = _text_of(ev.Message)
@@ -157,6 +158,7 @@ def _incoming(cl, ev, on_message):
                 "sender": src.Sender, "from_me": src.IsFromMe,
                 "is_audio": ev.Message.HasField("audioMessage"), "media": media, "event": ev,
                 "quoted": quoted, "quoted_kind": quoted_kind, "quoted_text": quoted_text,
+                "reply_to_bot": bool(quoted_id) and quoted_id in bot_ids,
                 "contact": contact or "", "pushname": ev.Info.Pushname or ""})
 
 
@@ -191,8 +193,8 @@ def _quoted(msg):
                         else "text")
                 text = (q.conversation or q.extendedTextMessage.text or q.imageMessage.caption
                         or q.videoMessage.caption or "")
-                return q, kind, text
-    return None, None, ""
+                return q, kind, text, ctx.stanzaID
+    return None, None, "", ""
 
 
 def _name_of_contact(cl, jid):
@@ -289,13 +291,27 @@ def download_quoted(m):
     return _client.download_any(m["quoted"])
 
 
-def reply_text(ev, text):
+def _remember(response):
+    try:
+        if response is not None and response.ID:
+            bot_ids.add(response.ID)
+            if len(bot_ids) > 5000:
+                bot_ids.clear()
+    except Exception:
+        pass
+
+
+def reply_text(ev, text, bot=False):
     """Responde citando el mensaje `ev`, para que en un grupo se vea a quien le contesta."""
-    _client.reply_message(text, ev)
+    response = _client.reply_message(text, ev)
+    if bot:
+        _remember(response)
 
 
-def send_text(jid, text):
-    _client.send_message(jid, text)
+def send_text(jid, text, bot=False):
+    response = _client.send_message(jid, text)
+    if bot:
+        _remember(response)
 
 
 def send_voice(jid, ogg_opus, seconds, waveform=b""):
