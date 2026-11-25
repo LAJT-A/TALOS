@@ -136,6 +136,7 @@ def _incoming(cl, ev, on_message):
              else "video" if msg.HasField("videoMessage") else None)
     raw = (msg.conversation or msg.extendedTextMessage.text or msg.imageMessage.caption
            or msg.videoMessage.caption or "")
+    quoted, quoted_kind, quoted_text = _quoted(msg)
     if src.IsFromMe and not raw.lstrip().startswith("."):
         return  # lo tuyo solo interesa si es una orden para el bot (".jarvis ...", ".stop")
     text = _text_of(ev.Message)
@@ -153,7 +154,26 @@ def _incoming(cl, ev, on_message):
     on_message({"who": who, "name": (ev.Info.Pushname or name).split()[0] if (ev.Info.Pushname or name) else "",
                 "text": text, "raw": raw, "is_group": src.IsGroup, "chat": src.Chat,
                 "sender": src.Sender, "from_me": src.IsFromMe,
-                "is_audio": ev.Message.HasField("audioMessage"), "media": media, "event": ev})
+                "is_audio": ev.Message.HasField("audioMessage"), "media": media, "event": ev,
+                "quoted": quoted, "quoted_kind": quoted_kind, "quoted_text": quoted_text})
+
+
+def _quoted(msg):
+    """El mensaje al que respondieron (si respondieron a uno): (mensaje, tipo, texto).
+
+    tipo: "image", "sticker", "video", "audio", "text" o None."""
+    for field in ("extendedTextMessage", "imageMessage", "videoMessage", "stickerMessage", "audioMessage"):
+        if msg.HasField(field):
+            ctx = getattr(msg, field).contextInfo
+            if ctx.HasField("quotedMessage"):
+                q = ctx.quotedMessage
+                kind = ("image" if q.HasField("imageMessage") else "sticker" if q.HasField("stickerMessage")
+                        else "video" if q.HasField("videoMessage") else "audio" if q.HasField("audioMessage")
+                        else "text")
+                text = (q.conversation or q.extendedTextMessage.text or q.imageMessage.caption
+                        or q.videoMessage.caption or "")
+                return q, kind, text
+    return None, None, ""
 
 
 def _name_of_contact(cl, jid):
@@ -243,6 +263,11 @@ def download_audio(ev):
 
 
 download_media = download_audio
+
+
+def download_quoted(m):
+    """Bytes de la foto, sticker, video o audio del mensaje al que respondieron."""
+    return _client.download_any(m["quoted"])
 
 
 def reply_text(ev, text):

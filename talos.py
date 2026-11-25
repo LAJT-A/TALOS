@@ -2071,11 +2071,13 @@ def transcribe_note(data):
     return max(options, key=lambda o: o[1])[0]
 
 
-def media_picture(m):
-    """La foto, el sticker o un cuadro del video que mandaron, como PNG para que la IA lo vea. None si no se pudo."""
+def media_picture(m, quoted=False):
+    """La foto, el sticker o un cuadro del video que mandaron (o al que respondieron, con quoted=True),
+    como PNG para que la IA lo vea."""
     from PIL import Image
-    data = whatsapp.download_media(m["event"])
-    if m["media"] == "video":
+    data = whatsapp.download_quoted(m) if quoted else whatsapp.download_media(m["event"])
+    kind = m["quoted_kind"] if quoted else m["media"]
+    if kind == "video":
         import av
         with av.open(io.BytesIO(data)) as src:
             stream = src.streams.video[0]
@@ -2111,7 +2113,7 @@ def bot_reply(session, text, picture=None):
     messages = [{"role": "system", "content": system}] + session["history"][-8:]
     if picture:  # la imagen solo va en el mensaje actual: el historial guarda el texto
         messages[-1] = dict(messages[-1], images=[picture])
-        system_note = (" They sent you a picture: look at it and comment on it naturally, like a friend would; "
+        system_note = (" They sent you a picture (or replied to one): look at it and comment on it naturally, like a friend would; "
                        "describe or identify what is in it if they ask.")
         messages[0] = {"role": "system", "content": system + system_note}
     answer = chat(messages, max_tokens=160)
@@ -2188,6 +2190,28 @@ def bot_worker():
                 icon = {"image": "📷", "sticker": "🎭", "video": "🎬"}[m["media"]]
                 bot_log(f"   {session['who']}: {icon} {text}".rstrip() + ("" if picture else " (no pude abrirla)"))
                 text = f"(sent a {label}{'' if picture else ' that could not be opened'}) {text}".strip()
+            kind_q = m.get("quoted_kind")
+            if kind_q in ("image", "sticker", "video") and not picture:  # respondieron a una foto
+                whatsapp.typing(session["chat"])
+                try:
+                    picture = media_picture(m, quoted=True)
+                except Exception as e:
+                    print("Foto citada de WhatsApp:", e)
+                label = {"image": "photo", "sticker": "sticker", "video": "video"}[kind_q]
+                es = {"image": "una foto", "sticker": "un sticker", "video": "un video"}[kind_q]
+                bot_log(f"   ↳ respondiendo a {es}" + ("" if picture else " (no pude abrirlo)"))
+                text = f"(replying to a {label}{'' if picture else ' that could not be opened'}) {text}".strip()
+            elif kind_q == "audio":  # respondieron a una nota de voz
+                try:
+                    said = transcribe_note(whatsapp.download_quoted(m))
+                except Exception as e:
+                    print("Audio citado de WhatsApp:", e)
+                    said = ""
+                bot_log(f"   ↳ respondiendo a un audio: \"{said or '(no se entendió)'}\"")
+                text = (f"(replying to a voice note that says: \"{said}\") {text}" if said
+                        else f"(replying to a voice note nobody could understand) {text}").strip()
+            elif kind_q == "text" and m.get("quoted_text"):
+                text = f"(replying to: \"{m['quoted_text'][:300]}\") {text}".strip()
             whatsapp.typing(session["chat"])  # "escribiendo..." mientras piensa
             answer = bot_reply(session, text, picture)
             bot_send(m, answer)
