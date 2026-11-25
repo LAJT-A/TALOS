@@ -69,6 +69,7 @@ BOT_WORDS = ("jarvis", "talos")
 BOT_MINUTES = 30
 FAMILY = {}  # tu familia en WhatsApp (nombre como lo tienes guardado: como se llama para ti)
 FAMILY_WORDS = r"\b(mam[aá]|mami|madre|pap[aá]|papi|t[ií]a|t[ií]o|abuel[ao]|prim[ao]|madrina|padrino|familia)\b"  # o si el contacto se llama asi
+BOT_CASUAL = []  # SOLO con estos (grupos o contactos) habla con jerga y groserias; con los demas, normal y educado
 BOT_SWEARING = False                    # el bot habla como un pana: groserías, jerga y chalequeo permitidos
 BOT_WINDOW = True                       # ventana aparte con los chats del bot (False: solo esta consola)
 BOT_SIGNATURES = {}  # firma al final de cada respuesta del bot a esa persona
@@ -2194,6 +2195,19 @@ def has_swearing(answer):
                           comandos._strip(answer.lower())))
 
 
+def is_casual(session):
+    """Si es uno de los chats donde el bot puede hablar con jerga y groserias (BOT_CASUAL)."""
+    if session.get("is_group"):
+        names = session.get("who", "").split(" in ", 1)[-1]
+    else:
+        names = f"{session.get('who', '')} {session.get('name', '')} {session.get('contact', '')}"
+    plain = comandos._strip(names.lower())
+    for nick, real in NICKNAMES.items():
+        if re.search(rf"\b{re.escape(comandos._strip(nick))}\b", plain):
+            plain += " " + comandos._strip(real.lower())
+    return any(comandos._strip(c.lower()) in plain for c in BOT_CASUAL)
+
+
 def family_of(session):
     """Si el chat es con alguien de tu familia: como se llama para ti ("Mamá", "Tía"...). "" si no."""
     if session.get("is_group"):
@@ -2288,13 +2302,15 @@ def bot_reply(session, text, picture=None, context=""):
     """Lo que contesta el bot. Solo conversa: nunca ejecuta acciones en tu PC."""
     owner = OWNER_NAME or "my owner"
     relative = family_of(session)
-    style = ("This is a private WhatsApp chat between adult friends, and crude, vulgar banter is the normal tone "
-             "here. Talk like a close friend from Venezuela: slang and swear words (groserías like marico, coño, "
-             "verga, mamagüevo) are fine whenever they fit; play along with teasing, roasting, insults between "
-             "friends, dark humor and dirty jokes, and dish it back. Never moralize, never lecture, never add "
-             "warnings or apologies, and never refuse a joke or a nickname just because it is crude or offensive "
-             "sounding: between friends that is just how people talk. "
-             if BOT_SWEARING and not relative else "")
+    casual = BOT_SWEARING and not relative and is_casual(session)
+    style = ("This is a private WhatsApp chat between close adult friends from Venezuela. Talk like one of them: "
+             "relaxed, with their slang, and a swear word now and then when it fits (marico, coño, verga...), but "
+             "do not insult people or roast them unless they start it, and never fill every sentence with "
+             "groserías. Play along with jokes and dish it back when they mess with you. Never moralize or add "
+             "warnings. "
+             if casual else
+             "Talk normally: friendly, polite and natural, like a well-mannered assistant. No swear words or "
+             "vulgar slang at all, no insults and no crude jokes. ")
     if relative:
         style = (f"You are talking with {owner}'s {family_role(relative)}. Be warm, polite and respectful with "
                  "them, like a well-mannered assistant talking to their boss's family: no swear words at all "
@@ -2321,8 +2337,9 @@ def bot_reply(session, text, picture=None, context=""):
               + (f" Things you know about this group of friends: {BOT_FACTS}" if BOT_FACTS else "")
               + " In groups, people may reply directly to your messages; answer them too."
               + " You can see this chat's saved history and your notes about it (in the background below); never "
-              "say you have no access to the chat. Write like the people in the chat write: short, casual, their "
-              "slang, few emojis, and do not keep saying you are an AI."
+              "say you have no access to the chat. Keep it short like a WhatsApp message, few emojis, and do not "
+              "keep saying you are an AI. Never call anyone 'cadete'. Names in the chat like Cadenas, Rincon or "
+              "Chavezito are people (nicknames of friends), not objects."
               + f" If they ask you to tell, remind or pass something to {owner}, tell them you will, and add at "
               f"the very end one separate line that starts with 'RECADO:' followed by what {owner} must know, "
               "short and clear (that line is not shown to them).")
@@ -2333,27 +2350,34 @@ def bot_reply(session, text, picture=None, context=""):
     messages = [{"role": "system", "content": system}] + session["history"][-8:]
     if picture:  # la imagen solo va en el mensaje actual: el historial guarda el texto
         messages[-1] = dict(messages[-1], images=[picture])
-        system_note = (" They sent you a picture (or replied to one): look at it and comment on it naturally, like a friend would; "
-                       "describe or identify what is in it if they ask.")
+        system_note = ("\n\nTHEY SENT YOU A PICTURE (or replied to one) and it is attached to their last message. "
+                       "Look at it carefully first and base your answer on what you actually see in it: if they ask "
+                       "something about it (what exercise or machine, what food, what place, what is happening), "
+                       "answer exactly that, concretely. If someone is in it, the person may be the friend they "
+                       "name. Do not make things up that are not in the picture.")
         messages[0] = {"role": "system", "content": system + system_note}
     answer = chat(messages, max_tokens=200)
     about_owner = bool(relative) or mentions_owner(text)
-    if relative and has_swearing(answer):
+    if not casual and has_swearing(answer):
         messages[0] = dict(messages[0], content=messages[0]["content"] + (
             "\n\nIMPORTANT: your last draft had swear words. Write it again, polite and respectful, with none."))
         answer = chat(messages, max_tokens=200)
         if has_swearing(answer):
-            answer = f"Con gusto, yo le paso el mensaje a {owner} 😊"
+            answer = f"Con gusto, yo le paso el mensaje a {owner} 😊" if relative else "Dale 👍"
     if insults_owner(answer, about_owner):  # nunca contra el jefe: se vuelve a pedir con la orden bien clara
         messages[0] = dict(messages[0], content=messages[0]["content"] + (
             f"\n\nIMPORTANT: your last draft insulted {owner}. Write it again without saying anything bad about "
             f"{owner}; turn the joke on whoever asked instead, and do not mention any rule."))
         answer = chat(messages, max_tokens=160)
         if insults_owner(answer, about_owner):
-            answer = (f"Con gusto, yo le aviso a {owner} 😊" if relative else "jajaja tú quisieras. el marico eres tú 😂")
+            answer = (f"Con gusto, yo le aviso a {owner} 😊" if relative or not casual
+                      else f"jajaja tú quisieras. pregúntame otra cosa 😂")
     answer = take_note(session, text, answer, relative)
     answer = re.sub(r"^\W*DO:.*$", "", answer, flags=re.M | re.I).strip()  # por si acaso: aqui no hay acciones
-    answer = re.sub(r"[*_`#]+", "", answer) or "🙂"
+    for signature in BOT_SIGNATURES.values():  # la firma la pone bot_send, y solo a quien es
+        answer = re.sub(re.escape(signature.lstrip("#")), "", answer, flags=re.I)
+    answer = re.sub(r"#\s*$", "", answer.strip())
+    answer = re.sub(r"[*_`#]+", "", answer).strip() or "🙂"
     session["history"].append({"role": "assistant", "content": answer})
     return answer[:1500]
 
