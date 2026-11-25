@@ -9,6 +9,7 @@ Si neonize no está instalado o no hay sesión, ready() devuelve False y TALOS u
 el método de siempre (la ventana de WhatsApp de escritorio).
 """
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -395,6 +396,46 @@ def find_chat(name, score):
             if s is not None and (best is None or s < best[0]):
                 best = (s, title, jid)
     return (best[1], best[2]) if best else (None, None)
+
+
+def title_of(chat_key):
+    """Nombre del grupo o contacto de ese chat (si ya se vio)."""
+    return (_seen.get(chat_key) or ("",))[0]
+
+
+def import_export(path, chat_key, owner_names=()):
+    """Guarda en el archivo los mensajes de un chat exportado (.txt de WhatsApp). Solo los mas viejos que lo
+    que ya hay guardado, para no repetir. Devuelve cuantos guardo."""
+    import datetime
+    pat = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{2,4}),? (\d{1,2}):(\d{2})(?:\s*([ap])\.?\s?m\.?)? - ([^:]+?): (.*)$", re.I)
+    with open(path, encoding="utf-8") as f:
+        text = f.read().replace("\u200e", "").replace("\u202f", " ")
+    found, day_first = [], False
+    for line in text.splitlines():
+        hit = pat.match(line)
+        if hit:
+            found.append(list(hit.groups()))
+            day_first = day_first or int(hit.group(1)) > 12
+        elif found and not re.match(r"^\d{1,2}/\d{1,2}/\d{2,4},", line):
+            found[-1][7] += "\n" + line
+    first = _query("SELECT MIN(ts) FROM msgs WHERE chat=? AND id NOT LIKE 'exp-%'", (chat_key,))
+    limit = (first[0][0] if first and first[0][0] else None)
+    mine = {n.lower() for n in owner_names}
+    rows = []
+    for i, (a, b, y, hh, mm, ampm, who, body) in enumerate(found):
+        if "<media omitted>" in body.lower() or "<multimedia omitido>" in body.lower():
+            continue
+        day, month = (int(a), int(b)) if day_first else (int(b), int(a))
+        year = int(y) + (2000 if len(y) == 2 else 0)
+        hour = int(hh) % 12 + (12 if ampm and ampm.lower() == "p" else 0) if ampm else int(hh)
+        ts = int(time.mktime(datetime.datetime(year, month, day, hour, int(mm)).timetuple()))
+        if limit and ts >= limit:
+            continue  # eso ya lo trajo WhatsApp
+        me = who.strip().lower() in mine
+        body = body.replace("<This message was edited>", "").strip()
+        rows.append((chat_key, f"exp-{i}", "", owner["name"] if me else who.strip(), ts, int(me), body))
+    _archive_add(rows)
+    return len(rows)
 
 
 def key_of(jid):

@@ -45,6 +45,8 @@ Cualquiera de tus contactos puede escribir **`.talos`** o **`.jarvis`** en el ch
   preguntan por algo que pasó, lo busca.
 - **Analiza un grupo**: dile *"analiza el grupo de fútbol"* y lee todo lo guardado de ese grupo y escribe
   notas (quién es quién, chistes internos, historias) en `bot_memoria/`, que usa al conversar ahí.
+  Un archivo `bot_memoria/<parte del nombre del grupo>.txt` también sirve, y si pones un chat exportado de
+  WhatsApp en `bot_memoria/importar/`, TALOS mete todo ese historial a su archivo de mensajes al arrancar.
 - Si alguien le **responde directamente a un mensaje del bot**, aunque no lo haya llamado, el bot le contesta y sigue la conversación.
 - No te interrumpe: los chats activos y lo que responde a cada uno se ven en una ventana aparte, *Bot de WhatsApp*, y mientras piensa la persona ve "escribiendo…".
 - Se termina cuando dices **"stop"** (todos los chats) o solo uno: *"deja de responderle a Ana"*, *"para el chat con el grupo de fútbol"*, cuando la persona escribe `.stop`, o tras 30 minutos sin mensajes.

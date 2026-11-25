@@ -19,6 +19,9 @@ OWNER_INFO = ""
 # Tu nombre, para el bot de WhatsApp ("Soy la IA de ...").
 OWNER_NAME = ""
 
+# Todos tus nombres y apodos: el bot nunca te insulta con ninguno (y tampoco dice "no tengo permitido").
+OWNER_ALIASES = []
+
 # Prefijo de país para números guardados sin "+".
 COUNTRY_CODE = "58"
 
