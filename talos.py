@@ -1431,14 +1431,15 @@ def run(text):
         speak("Anytime.")
         return False
     if bot_chats:  # el bot esta conversando con alguien por WhatsApp
-        quiet = re.fullmatch(r"(stop|stop it|para|parar|parale|detente|deten|basta|ya basta)", " ".join(words))
-        named = re.search(r"\b(deja|dejes|para|parar|stop|deten|detente)\b.*\b(respond\w*|contest\w*|habla\w*|escrib\w*"
-                          r"|chat\w*|answer\w*|repl\w*|talking|bot)\b(?:\s+(?:a|al|con|to|with)\s+(.+))?", plain)
-        if quiet or named:
-            stopped = bot_stop((named.group(3) or "") if named else "")
+        target = bot_stop_target(" ".join(words))
+        if target is not None:
+            stopped = bot_stop(target)
             if stopped:
                 speak("Okay, I stopped chatting with " + " and ".join(stopped) + ".")
-                return True
+            else:
+                speak(f"I'm not chatting with {target} on WhatsApp. Right now: "
+                      + ", ".join(session["who"] for session in bot_chats.values()) + ".")
+            return True
     command = comandos.to_command(said)
     set_state("thinking", said)
     only_save = command == "screenshot" and not re.search(LOOK_VERBS, plain)
@@ -2080,12 +2081,46 @@ def bot_worker():
             bot_log(f"Error: {e}")
 
 
+def bot_stop_target(plain):
+    """Si la frase pide parar el bot: "" para todos, o el nombre de a quien. None si no es eso.
+
+    "stop" / "para" / "basta"                       -> todos
+    "deja de responderle a luciano"                 -> luciano
+    "para el chat con ana" / "stop chatting with ana" -> ana
+    "para con luciano" / "stop luciano"             -> luciano (si esta chateando con el)
+    """
+    if re.fullmatch(r"(stop|stop it|para|parar|parale|detente|deten|basta|ya basta|stop all|para todo"
+                    r"|para todos los chats|stop all chats)", plain):
+        return ""
+    m = re.search(r"\b(deja|dejes|para|parar|parale|stop|deten|detente|termina|cierra|corta)\b.*?\b(respond\w*|contest\w*"
+                  r"|habla\w*|escrib\w*|chat\w*|conversa\w*|answer\w*|repl\w*|talking|bot)\b"
+                  r"(?:\s+(?:a|al|con|de|del|to|with)\s+(?:el |la |the )?(.+))?$", plain)
+    if m:
+        return (m.group(3) or "").strip()
+    m = re.fullmatch(r"(?:stop|para|parale|deten|detente|basta)\s+(?:a |al |con |with |to )?(?:el |la )?(.+)", plain)
+    if m and bot_matches(m.group(1)):
+        return m.group(1).strip()
+    return None
+
+
+def bot_matches(name):
+    """Claves de los chats del bot que coinciden con `name` (nombre, apodo o nombre del grupo)."""
+    key = re.sub(r"^(el |la |the )?(grupo|group|chat)( de| del| with)? ", "", comandos._strip(name.lower()).strip())
+    alias = comandos._strip(NICKNAMES.get(key, "").lower())
+    found = []
+    for k, session in bot_chats.items():
+        names = comandos._strip(f"{session['who']} {session['name']}".lower())
+        if key in names or (alias and alias in names):
+            found.append(k)
+    return found
+
+
 def bot_stop(name=""):
     """Deja de contestar (a todos, o a quien coincida con `name`). Devuelve a quienes."""
-    key = comandos._strip(name.lower()).strip()
+    chosen = bot_matches(name) if name.strip() else list(bot_chats)
     stopped = []
     for k, session in list(bot_chats.items()):
-        if not key or key in comandos._strip(session["who"].lower()):
+        if k in chosen:
             bot_chats.pop(k, None)
             stopped.append(session["who"])
     if stopped:
