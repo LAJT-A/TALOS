@@ -66,6 +66,7 @@ WHATSAPP_ANNOUNCE = True
 BOT_ENABLED = True
 BOT_WORDS = ("jarvis", "talos")
 BOT_MINUTES = 30
+BOT_WINDOW = True                       # ventana aparte con los chats del bot (False: solo esta consola)
 OWNER_NAME = ""                  # tu nombre, para que el bot diga de parte de quien habla         # avisar por las bocinas cuando llega un WhatsApp (solo dice de quien)
 PHONE_ALOUD = False              # True: lo que pidas desde el celular tambien se responde por las bocinas
 
@@ -994,8 +995,8 @@ def confirm(prompt):
 
 
 # ======================= IA =======================
-def chat(messages):
-    kwargs = dict(model=MODEL, messages=messages, keep_alive=KEEP_ALIVE, options={"num_predict": 300})
+def chat(messages, max_tokens=300):
+    kwargs = dict(model=MODEL, messages=messages, keep_alive=KEEP_ALIVE, options={"num_predict": max_tokens})
     try:
         return ollama.chat(think=False, **kwargs)["message"]["content"]
     except Exception as e:
@@ -1964,6 +1965,35 @@ def whatsapp_send(name, message):
 
 bot_chats = {}             # clave del chat -> {"chat", "name", "history", "last"}
 bot_queue = queue.Queue()  # el bot trabaja en su propio hilo: no te quita a TALOS mientras habla
+BOT_LOG = os.path.join(HERE, "bot_chats.log")
+bot_window = {"proc": None}
+
+
+def bot_log(line):
+    """Muestra el bot en la consola y en su ventana aparte, sin hablar ni interrumpirte."""
+    stamp = time.strftime("%H:%M")
+    print(f"[Bot {stamp}] {line}")
+    try:
+        with open(BOT_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{stamp}  {line}\n")
+    except OSError:
+        return
+    proc = bot_window["proc"]
+    if BOT_WINDOW and (proc is None or proc.poll() is not None):
+        script = ("$host.ui.RawUI.WindowTitle = 'Bot de WhatsApp'; "
+                  "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+                  f"Get-Content -LiteralPath '{BOT_LOG}' -Wait -Tail 40 -Encoding UTF8")
+        try:
+            bot_window["proc"] = subprocess.Popen(["powershell", "-NoProfile", "-Command", script],
+                                                  creationflags=subprocess.CREATE_NEW_CONSOLE)
+        except Exception as e:
+            print("Ventana del bot:", e)
+
+
+def bot_active():
+    """Una linea con los chats que el bot esta atendiendo."""
+    names = [session["who"] for session in bot_chats.values()]
+    return "Chats activos: " + (", ".join(names) if names else "ninguno")
 
 
 def bot_key(m):
@@ -2005,7 +2035,7 @@ def bot_reply(session, text):
               "information, messages, files, location or plans, and never promise anything on his behalf; if they "
               f"need something from {owner}, say you will let him know. No markdown, no lists.")
     session["history"].append({"role": "user", "content": text})
-    answer = chat([{"role": "system", "content": system}] + session["history"][-12:])
+    answer = chat([{"role": "system", "content": system}] + session["history"][-8:], max_tokens=160)
     answer = re.sub(r"^\W*DO:.*$", "", answer, flags=re.M | re.I).strip()  # por si acaso: aqui no hay acciones
     answer = re.sub(r"[*_`#]+", "", answer) or "🙂"
     session["history"].append({"role": "assistant", "content": answer})
@@ -2023,25 +2053,31 @@ def bot_worker():
             if kind == "stop":
                 if bot_chats.pop(key, None) or m["from_me"]:
                     whatsapp.send_text(m["chat"], "Okay, I'll stop here. Bye! 👋")
-                    print("Bot de WhatsApp: termino con", m["who"])
+                    bot_log(f"■ Terminó con {m['who']}.  {bot_active()}")
                 continue
             if kind == "start":
                 if not session:
                     who = m["who"] if not m["from_me"] else "this chat"
                     session = bot_chats[key] = {"chat": m["chat"], "name": m["name"] or "friend",
                                                 "who": who, "history": [], "last": time.time()}
-                    telefono.signals.put(f"BOT {who}")  # TALOS te avisa en voz alta
+                    bot_log(f"▶ Empezó con {who}.  {bot_active()}")
                 if not text:
-                    whatsapp.send_text(m["chat"], f"Yes, {m['name']}?" if not m["from_me"] else "Yes?")
+                    reply = f"Yes, {m['name']}?" if not m["from_me"] else "Yes?"
+                    whatsapp.send_text(m["chat"], reply)
+                    bot_log(f"   {who}: .jarvis")
+                    bot_log(f"   → {reply}")
                     continue
             if kind == "msg" and not session:
                 continue
             session["last"] = time.time()
+            bot_log(f"   {session['who']}: {text}")
+            whatsapp.typing(session["chat"])  # "escribiendo..." mientras piensa
+            started = time.time()
             answer = bot_reply(session, text)
-            print(f"Bot de WhatsApp -> {session['who']}: {answer[:100]}")
             whatsapp.send_text(session["chat"], answer)
+            bot_log(f"   → {answer}   ({time.time() - started:.1f} s)")
         except Exception as e:
-            print("Bot de WhatsApp:", e)
+            bot_log(f"Error: {e}")
 
 
 def bot_stop(name=""):
@@ -2052,6 +2088,8 @@ def bot_stop(name=""):
         if not key or key in comandos._strip(session["who"].lower()):
             bot_chats.pop(k, None)
             stopped.append(session["who"])
+    if stopped:
+        bot_log(f"■ Paraste el bot con {', '.join(stopped)}.  {bot_active()}")
     return stopped
 
 
@@ -2078,8 +2116,6 @@ def phone_signal(signal):
         phone_state["call"] = "active"
     elif kind == "CALLEND":
         phone_state.update(call=None, who="")
-    elif kind == "BOT":  # alguien llamo al bot por WhatsApp
-        speak(f"Sir, I'm chatting with {detail} on WhatsApp. Say stop when you want me to stop.")
     elif kind in ("WA", "WAD"):  # llego un WhatsApp (WAD: por la conexion directa)
         who, _, text = detail.partition("|")
         who, text = who.strip(), text.strip()

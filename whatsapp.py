@@ -222,6 +222,16 @@ def jid_for_number(number):
     return build_jid(number)
 
 
+def typing(jid, on=True):
+    """Muestra (o quita) el "escribiendo..." en el chat."""
+    from neonize.utils.enum import ChatPresence, ChatPresenceMedia
+    try:
+        state = ChatPresence.CHAT_PRESENCE_COMPOSING if on else ChatPresence.CHAT_PRESENCE_PAUSED
+        _client.send_chat_presence(jid, state, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT)
+    except Exception:
+        pass
+
+
 def send_text(jid, text):
     _client.send_message(jid, text)
 
