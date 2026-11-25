@@ -24,3 +24,6 @@ winrt-Windows.Media.Control
 
 # Enlace con el celular
 pyserial==3.5
+
+# WhatsApp directo (whatsmeow)
+neonize==0.12.4

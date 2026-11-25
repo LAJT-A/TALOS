@@ -19,3 +19,7 @@ contactos.json
 
 # Ajustes personales
 ajustes_locales.py
+
+# Sesión de WhatsApp: da acceso completo a tu cuenta, nunca la subas
+whatsapp.db*
+whatsapp_qr.png

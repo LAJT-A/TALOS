@@ -25,7 +25,7 @@ tus apps, tu música, tu WhatsApp y hasta tu celular.
 | 🖥️ **Controla tu PC** | Abre y cierra cualquier app, carpeta o página, escribe, pulsa teclas, hace clic en botones por su nombre, busca archivos y maneja ventanas. |
 | 👀 **Mira tu pantalla** | "¿Qué estoy viendo?": toma una captura y te la explica. Puedes seguir preguntando sobre ella. |
 | 🎵 **Spotify** | Busca y pone canciones, pausa, cambia de tema y sube o baja el volumen de Spotify sin tocar el del resto. |
-| 💬 **WhatsApp** | Encuentra el chat o grupo aunque digas el nombre a medias, redacta el mensaje y lo envía. También manda **notas de voz** con su propia voz. Siempre pide confirmación antes de enviar. |
+| 💬 **WhatsApp** | Se conecta directo a WhatsApp como un dispositivo vinculado (con [neonize](https://github.com/krypton-byte/neonize)): encuentra el chat o grupo aunque digas el nombre a medias, redacta el mensaje y lo envía en menos de un segundo. También manda **notas de voz reales** con su propia voz y te avisa de los mensajes que llegan. Siempre pide confirmación antes de enviar. |
 | 📱 **Tu celular** | Con [**TMC**](#-talos-mobile-connection-tmc) le hablas desde el teléfono, y TALOS controla la música del celular, contesta y cuelga llamadas y te avisa de los mensajes. |
 | 🎮 **Modo gamer** | Cierra lo que consume recursos en segundo plano y libera la IA de la memoria. La "noche de juegos" además abre tu juego. |
 
@@ -76,6 +76,15 @@ tu archivo de ajustes personales. Después, abre TALOS con:
 scripts\talos.bat
 ```
 
+### WhatsApp
+
+La primera vez que abres TALOS aparece un código QR: escanéalo desde *WhatsApp → Dispositivos vinculados →
+Vincular un dispositivo*. La sesión queda en `whatsapp.db`, que da acceso completo a tu cuenta: no la
+compartas ni la subas a ningún lado.
+
+> neonize no es un cliente oficial de WhatsApp. Úsalo para tus propios mensajes; WhatsApp puede suspender
+> cuentas que hacen spam o usan clientes no oficiales.
+
 ## Ajustes
 
 Los ajustes generales están al principio de [`talos.py`](talos.py). Los tuyos (micrófono, apodos de
@@ -109,6 +118,7 @@ TALOS/
 ├── talos.py                     # el asistente: escucha, IA, acciones
 ├── comandos.py                  # entiende frases en español e inglés y las pasa a órdenes
 ├── telefono.py                  # enlace Bluetooth con TMC
+├── whatsapp.py                  # conexión directa con WhatsApp (neonize)
 ├── ui.py                        # el anillo de luz en pantalla
 ├── ajustes_locales.example.py   # plantilla de tus ajustes personales
 ├── requirements.txt

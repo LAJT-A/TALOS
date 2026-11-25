@@ -34,6 +34,7 @@ from piper import PiperVoice
 
 import comandos
 import telefono
+import whatsapp
 import ui
 
 # ======================= AJUSTES =======================
@@ -58,6 +59,7 @@ COUNTRY_CODE = "58"              # prefijo para los contactos guardados sin codi
 # Apodos: como le dices tú -> como está guardado el chat en WhatsApp. Un trozo del nombre ya
 # funciona solo ("pepe" encuentra "Pepe Trueno"); esto es para nombres que no se parecen en nada.
 NICKNAMES = {}
+WHATSAPP_DIRECT = True           # WhatsApp directo con neonize (si falla, usa la ventana de escritorio)
 WHATSAPP_ANNOUNCE = True         # avisar por las bocinas cuando llega un WhatsApp (solo dice de quien)
 PHONE_ALOUD = False              # True: lo que pidas desde el celular tambien se responde por las bocinas
 
@@ -1691,6 +1693,51 @@ def make_audio(text):
     return path
 
 
+def make_voice_note(text):
+    """Graba `text` con la voz de TALOS como nota de voz de WhatsApp. -> (ogg_opus, segundos, waveform)."""
+    import av
+    with wave.open(TTS_FILE, "wb") as f:
+        voice.synthesize_wav(text, f)
+    with wave.open(TTS_FILE, "rb") as f:
+        samples = np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(np.float32)
+        seconds = f.getnframes() / f.getframerate()
+    # la "onda" que dibuja WhatsApp: 64 valores de 0 a 100
+    parts = np.array_split(np.abs(samples), 64) if len(samples) >= 64 else [np.zeros(1)] * 64
+    peaks = np.array([part.mean() for part in parts])
+    waveform = bytes((peaks / (peaks.max() or 1) * 100).astype(np.uint8))
+    out_file = io.BytesIO()
+    with av.open(TTS_FILE) as src, av.open(out_file, "w", format="ogg") as out:
+        stream = out.add_stream("libopus", rate=48000)
+        stream.bit_rate = 32000
+        stream.layout = "mono"
+        resampler = av.AudioResampler(format=stream.format, layout="mono", rate=48000,
+                                      frame_size=stream.frame_size or 960)
+        for frame in src.decode(audio=0):
+            for part in resampler.resample(frame):
+                for packet in stream.encode(part):
+                    out.mux(packet)
+        for part in resampler.resample(None):
+            for packet in stream.encode(part):
+                out.mux(packet)
+        for packet in stream.encode(None):
+            out.mux(packet)
+    return out_file.getvalue(), seconds, waveform
+
+
+def direct_chat(who):
+    """(titulo, jid) del chat por la conexion directa, o (None, None). Acepta nombres a medias y numeros."""
+    if not (WHATSAPP_DIRECT and whatsapp.ready()):
+        return None, None
+    try:
+        if len(re.sub(r"\D", "", who)) >= 7 and not re.search(r"[a-z]", who.lower()):
+            return who, whatsapp.jid_for_number(full_number(who))
+        key = comandos._strip(who.lower()).strip()
+        return whatsapp.find_chat(who, lambda title: name_score(key, comandos._strip(title.lower())))
+    except Exception as e:
+        print("WhatsApp directo (buscar chat):", e)
+        return None, None
+
+
 def copy_file(path):
     """Pone un archivo en el portapapeles, como al copiarlo en el Explorador, para pegarlo en un chat."""
     import struct
@@ -1757,6 +1804,24 @@ def whatsapp_audio(name, text):
     if not who:
         speak("Tell me who the audio is for.")
         return
+    title, jid = direct_chat(who)
+    if jid is not None:  # conexion directa: nota de voz de verdad
+        try:
+            note = make_voice_note(text)
+        except Exception as e:
+            print("Nota de voz:", e)
+            note = None
+        if note is not None:
+            if not confirm(f"Voice message for {title}, saying: {text}. Send it?"):
+                speak("Cancelled.")
+                return
+            try:
+                whatsapp.send_voice(jid, *note)
+                speak("Sent.")
+                return
+            except Exception as e:
+                print("WhatsApp directo (nota de voz):", e)
+                speak("The direct connection failed, I will use the WhatsApp window.")
     try:
         path = make_audio(text)
         if len(re.sub(r"\D", "", who)) >= 7 and not re.search(r"[a-z]", who.lower()):
@@ -1816,6 +1881,18 @@ def whatsapp_send(name, message):
         return
     who = NICKNAMES.get(comandos._strip(who.lower()).strip(), who)
     message = message[0].upper() + message[1:]
+    title, jid = direct_chat(who)
+    if jid is not None:  # conexion directa: sin abrir ventanas
+        if not confirm(f"Message for {title}: {message}. Send it?"):
+            speak("Cancelled.")
+            return
+        try:
+            whatsapp.send_text(jid, message)
+            speak("Sent.")
+            return
+        except Exception as e:
+            print("WhatsApp directo (enviar):", e)
+            speak("The direct connection failed, I will use the WhatsApp window.")
     shown = None
     if WHATSAPP_FROM_PC:
         try:
@@ -1884,9 +1961,12 @@ def phone_signal(signal):
         phone_state["call"] = "active"
     elif kind == "CALLEND":
         phone_state.update(call=None, who="")
-    elif kind == "WA":  # llego un WhatsApp
+    elif kind in ("WA", "WAD"):  # llego un WhatsApp (WAD: por la conexion directa)
         who, _, text = detail.partition("|")
-        wa_messages.append((who.strip(), text.strip(), time.time()))
+        who, text = who.strip(), text.strip()
+        if any(w == who and t == text and time.time() - when < 120 for w, t, when in wa_messages):
+            return  # el mismo mensaje ya llego por el otro camino
+        wa_messages.append((who, text, time.time()))
         if WHATSAPP_ANNOUNCE:
             speak(f"Sir, WhatsApp from {who.strip()}.")
     elif kind == "APPS":  # la app pide la lista para su menu
@@ -1958,5 +2038,10 @@ if __name__ == "__main__":
     threading.Thread(target=mic_loop, daemon=True).start()
     if PHONE_ENABLED:
         telefono.start(PHONE_PORT)
+    if WHATSAPP_DIRECT:
+        def wa_message(who, text, is_group, jid):
+            if not is_group:  # los grupos no se anuncian
+                telefono.signals.put(f"WAD {who}|{text.replace(chr(10), ' ')}")
+        whatsapp.start(HERE, wa_message)
     threading.Thread(target=brain, daemon=True).start()
     root.mainloop()
