@@ -43,6 +43,9 @@ Cualquiera de tus contactos puede escribir **`.talos`** o **`.jarvis`** en el ch
 - No te interrumpe: los chats activos y lo que responde a cada uno se ven en una ventana aparte, *Bot de WhatsApp*, y mientras piensa la persona ve "escribiendo…".
 - Se termina cuando dices **"stop"** (todos los chats) o solo uno: *"deja de responderle a Ana"*, *"para el chat con el grupo de fútbol"*, cuando la persona escribe `.stop`, o tras 30 minutos sin mensajes.
 
+Tú mandas: si escribes `.talos <orden>` en un chat (por ejemplo *".talos dile a Ana que llego tarde"*), el bot
+la cumple ahí mismo. Y nunca se burla de ti, aunque se lo pidan.
+
 Por seguridad, en estas conversaciones TALOS solo charla: no ejecuta nada en tu PC, no cuenta tus datos y no
 promete nada por ti. Pon tu nombre en `OWNER_NAME` para que diga de parte de quién habla.
 

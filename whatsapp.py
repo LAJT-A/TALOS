@@ -142,10 +142,11 @@ def _incoming(cl, ev, on_message):
     text = _text_of(ev.Message)
     if not text:
         return
-    name = _name_of_contact(cl, src.Sender) or ev.Info.Pushname or src.Sender.User
+    contact = _saved_name(cl, src)  # como lo tienes guardado (en grupos el remitente viene con un ID oculto)
+    name = contact or ev.Info.Pushname or src.Sender.User
     if src.IsGroup:
         group = _name_of_group(cl, src.Chat)
-        who = f"{ev.Info.Pushname or name} in {group}"
+        who = f"{name} in {group}"
         _seen[_jid_text(src.Chat)] = (group, src.Chat)
     else:
         who = name
@@ -155,7 +156,25 @@ def _incoming(cl, ev, on_message):
                 "text": text, "raw": raw, "is_group": src.IsGroup, "chat": src.Chat,
                 "sender": src.Sender, "from_me": src.IsFromMe,
                 "is_audio": ev.Message.HasField("audioMessage"), "media": media, "event": ev,
-                "quoted": quoted, "quoted_kind": quoted_kind, "quoted_text": quoted_text})
+                "quoted": quoted, "quoted_kind": quoted_kind, "quoted_text": quoted_text,
+                "contact": contact or "", "pushname": ev.Info.Pushname or ""})
+
+
+def _saved_name(cl, src):
+    """Nombre con el que tienes guardado al remitente, probando su numero real si viene con ID oculto (LID)."""
+    candidates = [src.Sender]
+    if src.HasField("SenderAlt") and src.SenderAlt.User:
+        candidates.append(src.SenderAlt)
+    if src.Sender.Server == "lid":
+        try:
+            candidates.append(cl.get_pn_from_lid(src.Sender))
+        except Exception:
+            pass
+    for jid in candidates:
+        name = _name_of_contact(cl, jid)
+        if name:
+            return name
+    return None
 
 
 def _quoted(msg):
