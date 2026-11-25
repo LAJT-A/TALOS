@@ -9,6 +9,7 @@ Si neonize no está instalado o no hay sesión, ready() devuelve False y TALOS u
 el método de siempre (la ventana de WhatsApp de escritorio).
 """
 import os
+import sqlite3
 import threading
 import time
 
@@ -18,6 +19,92 @@ _lock = threading.Lock()
 _chats = {"time": 0.0, "list": []}       # (nombre, jid) de contactos y grupos
 _seen = {}                               # jid -> nombre de quien escribio hace poco
 bot_ids = set()                          # IDs de los mensajes que mando el bot (para saber si le responden a el)
+owner = {"name": "me"}                   # como se llama el dueño en el archivo de mensajes
+_db = {"conn": None, "lock": threading.Lock()}
+
+
+# ======================= ARCHIVO DE MENSAJES =======================
+# Guarda en whatsapp_mensajes.db el texto de los mensajes (los que llegan, los del historial que manda
+# el telefono al vincular y los del bot), para que el bot pueda ver mensajes viejos y su contexto.
+
+def _archive_open(folder):
+    conn = sqlite3.connect(os.path.join(folder, "whatsapp_mensajes.db"), check_same_thread=False)
+    conn.execute("CREATE TABLE IF NOT EXISTS msgs (chat TEXT, id TEXT, sender TEXT, name TEXT, ts INTEGER,"
+                 " from_me INTEGER, text TEXT, PRIMARY KEY (chat, id))")
+    conn.execute("CREATE INDEX IF NOT EXISTS by_time ON msgs (chat, ts)")
+    conn.commit()
+    _db["conn"] = conn
+
+
+def _archive_add(rows):
+    if not rows:
+        return
+    with _db["lock"]:
+        conn = _db["conn"]
+        if conn is not None:
+            conn.executemany("INSERT OR IGNORE INTO msgs VALUES (?,?,?,?,?,?,?)", rows)
+            conn.commit()
+
+
+def _query(sql, args=()):
+    with _db["lock"]:
+        conn = _db["conn"]
+        return conn.execute(sql, args).fetchall() if conn is not None else []
+
+
+def _seconds(ts):
+    ts = int(ts or 0)
+    return ts // 1000 if ts > 10_000_000_000 else ts
+
+
+def lines(rows):
+    """Filas del archivo como texto: "[25/11 18:12] Gabo: hola"."""
+    return "\n".join(f"[{time.strftime('%d/%m/%y %H:%M', time.localtime(ts))}] {name}: {text}"
+                     for ts, name, text in rows)
+
+
+def around(chat_key, msg_id, before=15, after=8):
+    """Los mensajes alrededor de uno (por su ID). [] si no esta en el archivo."""
+    hit = _query("SELECT ts FROM msgs WHERE chat=? AND id=?", (chat_key, msg_id))
+    if not hit:
+        return []
+    ts = hit[0][0]
+    older = _query("SELECT ts, name, text FROM msgs WHERE chat=? AND ts<=? ORDER BY ts DESC LIMIT ?",
+                   (chat_key, ts, before + 1))
+    newer = _query("SELECT ts, name, text FROM msgs WHERE chat=? AND ts>? ORDER BY ts LIMIT ?",
+                   (chat_key, ts, after))
+    return list(reversed(older)) + newer
+
+
+def recent(chat_key, n=12):
+    return list(reversed(_query("SELECT ts, name, text FROM msgs WHERE chat=? ORDER BY ts DESC LIMIT ?",
+                                (chat_key, n))))
+
+
+def search(chat_key, words, limit=10):
+    """Mensajes del chat que contienen alguna de esas palabras, con 2 mensajes de contexto a cada lado."""
+    found, seen = [], set()
+    for word in words[:6]:
+        for ts, mid in _query("SELECT ts, id FROM msgs WHERE chat=? AND lower(text) LIKE ? ORDER BY ts DESC LIMIT ?",
+                              (chat_key, f"%{word.lower()}%", limit)):
+            if mid in seen:
+                continue
+            seen.add(mid)
+            found.append((ts, around(chat_key, mid, before=2, after=2)))
+    found.sort(key=lambda x: x[0])
+    return [rows for _, rows in found[-limit:]]
+
+
+def all_messages(chat_key, limit=4000):
+    return list(reversed(_query("SELECT ts, name, text FROM msgs WHERE chat=? ORDER BY ts DESC LIMIT ?",
+                                (chat_key, limit))))
+
+
+def count(chat_key=None):
+    if chat_key:
+        return _query("SELECT count(*) FROM msgs WHERE chat=?", (chat_key,))[0][0]
+    return _query("SELECT count(*) FROM msgs")[0][0]
+
 
 
 def ready():
@@ -45,12 +132,18 @@ def _run(folder, on_message, on_status):
     # solo avisos y errores: sin esto la consola se llena con la sincronizacion del historial
     for logger in (neonize_log, logging.getLogger("whatsmeow"), logging.getLogger("Whatsmeow")):
         logger.setLevel(logging.WARNING)
-    from neonize.events import ConnectedEv, LoggedOutEv, MessageEv, PairStatusEv
+    from neonize.events import ConnectedEv, HistorySyncEv, LoggedOutEv, MessageEv, PairStatusEv
+    from neonize.proto.waCompanionReg.WACompanionReg_pb2 import DeviceProps
 
     db = os.path.join(folder, "whatsapp.db")
     qr_file = os.path.join(folder, "whatsapp_qr.png")
+    _archive_open(folder)
+    # al vincular, pide al telefono el historial completo (hasta un año) para el archivo de mensajes
+    props = DeviceProps(os="TALOS", platformType=DeviceProps.SAFARI, requireFullSync=True,
+                        historySyncConfig=DeviceProps.HistorySyncConfig(fullSyncDaysLimit=365,
+                                                                        supportGroupHistory=True))
     while True:
-        client = NewClient(db, uuid="talos")
+        client = NewClient(db, uuid="talos", props=props)
 
         def on_qr(_, data):
             state["status"] = "qr"
@@ -78,9 +171,22 @@ def _run(folder, on_message, on_status):
             on_status("WhatsApp directo: conectado")
 
         @client.event(LoggedOutEv)
-        def _logged_out(_, ev):
+        def _logged_out(cl, ev):
             state["status"] = "logged_out"
-            on_status("WhatsApp directo: la sesión se cerró desde el teléfono; borra whatsapp.db para vincular de nuevo")
+            on_status("WhatsApp directo: cerraste la sesión desde el teléfono; preparo un QR nuevo")
+            try:
+                cl.disconnect()
+            except Exception:
+                pass
+
+        @client.event(HistorySyncEv)
+        def _history(cl, ev):
+            try:
+                n = _history_rows(cl, ev)
+                if n:
+                    on_status(f"WhatsApp directo: historial +{n} mensajes (total {count()})")
+            except Exception as e:
+                on_status(f"WhatsApp directo (historial): {e}")
 
         @client.event(MessageEv)
         def _message(cl, ev):
@@ -96,8 +202,15 @@ def _run(folder, on_message, on_status):
         except Exception as e:
             state.update(status="error", error=str(e))
             on_status(f"WhatsApp directo: {e}")
-        if state["status"] == "logged_out":
-            return
+        if state["status"] == "logged_out":  # vincular de nuevo: la sesion vieja se guarda aparte
+            time.sleep(2)
+            try:
+                os.replace(db, db.replace(".db", time.strftime("_vieja_%Y%m%d_%H%M%S.db")))
+            except OSError as e:
+                on_status(f"WhatsApp directo: no pude apartar whatsapp.db ({e}); ciérralo y bórralo a mano")
+                return
+            state["status"] = "off"
+            continue
         state["status"] = "off"
         time.sleep(30)  # se cayó la conexión: reintenta
 
@@ -125,6 +238,31 @@ def _jid_text(jid):
     return f"{jid.User}@{jid.Server}"
 
 
+def _history_rows(cl, ev):
+    """Guarda en el archivo los mensajes del historial que manda el telefono."""
+    from neonize.proto.Neonize_pb2 import JID
+    names, rows = {}, []
+    for conv in ev.Data.conversations:
+        chat = conv.ID
+        for item in conv.messages:
+            w = item.message
+            text = _text_of(w.message)
+            if not text or not w.key.ID:
+                continue
+            me = w.key.fromMe
+            sender = "" if me else (w.key.participant or w.participant or chat)
+            if me:
+                name = owner["name"]
+            else:
+                if sender not in names:
+                    user, _, server = sender.partition("@")
+                    names[sender] = _name_of_contact(cl, JID(User=user, Server=server)) or w.pushName or user
+                name = names[sender]
+            rows.append((chat, w.key.ID, sender, name, _seconds(w.messageTimestamp), int(me), text))
+    _archive_add(rows)
+    return len(rows)
+
+
 def _incoming(cl, ev, on_message):
     """Pasa a TALOS cada mensaje que llega como un dict:
     who (quien, para avisar), name (nombre corto), text (descripcion legible), raw (el texto tal cual,
@@ -138,19 +276,21 @@ def _incoming(cl, ev, on_message):
     raw = (msg.conversation or msg.extendedTextMessage.text or msg.imageMessage.caption
            or msg.videoMessage.caption or "")
     quoted, quoted_kind, quoted_text, quoted_id = _quoted(msg)
-    if src.IsFromMe and not raw.lstrip().startswith("."):
-        return  # lo tuyo solo interesa si es una orden para el bot (".jarvis ...", ".stop")
     text = _text_of(ev.Message)
     if not text:
         return
-    contact = _saved_name(cl, src)  # como lo tienes guardado (en grupos el remitente viene con un ID oculto)
-    name = contact or ev.Info.Pushname or src.Sender.User
+    contact = None if src.IsFromMe else _saved_name(cl, src)  # en grupos el remitente viene con un ID oculto
+    name = owner["name"] if src.IsFromMe else (contact or ev.Info.Pushname or src.Sender.User)
+    _archive_add([(_jid_text(src.Chat), ev.Info.ID, _jid_text(src.Sender), name,
+                   _seconds(ev.Info.Timestamp) or int(time.time()), int(src.IsFromMe), raw or text)])
+    if src.IsFromMe and not raw.lstrip().startswith("."):
+        return  # lo tuyo solo interesa si es una orden para el bot (".jarvis ...", ".stop")
     if src.IsGroup:
         group = _name_of_group(cl, src.Chat)
         who = f"{name} in {group}"
         _seen[_jid_text(src.Chat)] = (group, src.Chat)
     else:
-        who = name
+        who = name if not src.IsFromMe else (_name_of_contact(cl, src.Chat) or src.Chat.User)
         if not src.IsFromMe:
             _seen[_jid_text(src.Chat)] = (who, src.Chat)
     on_message({"who": who, "name": (ev.Info.Pushname or name).split()[0] if (ev.Info.Pushname or name) else "",
@@ -158,7 +298,7 @@ def _incoming(cl, ev, on_message):
                 "sender": src.Sender, "from_me": src.IsFromMe,
                 "is_audio": ev.Message.HasField("audioMessage"), "media": media, "event": ev,
                 "quoted": quoted, "quoted_kind": quoted_kind, "quoted_text": quoted_text,
-                "reply_to_bot": bool(quoted_id) and quoted_id in bot_ids,
+                "reply_to_bot": bool(quoted_id) and quoted_id in bot_ids, "quoted_id": quoted_id,
                 "contact": contact or "", "pushname": ev.Info.Pushname or ""})
 
 
@@ -291,12 +431,14 @@ def download_quoted(m):
     return _client.download_any(m["quoted"])
 
 
-def _remember(response):
+def _remember(response, chat=None, text=""):
     try:
         if response is not None and response.ID:
             bot_ids.add(response.ID)
             if len(bot_ids) > 5000:
                 bot_ids.clear()
+            if chat is not None:
+                _archive_add([(_jid_text(chat), response.ID, "", "Talos (bot)", int(time.time()), 1, text)])
     except Exception:
         pass
 
@@ -305,13 +447,13 @@ def reply_text(ev, text, bot=False):
     """Responde citando el mensaje `ev`, para que en un grupo se vea a quien le contesta."""
     response = _client.reply_message(text, ev)
     if bot:
-        _remember(response)
+        _remember(response, ev.Info.MessageSource.Chat, text)
 
 
 def send_text(jid, text, bot=False):
     response = _client.send_message(jid, text)
     if bot:
-        _remember(response)
+        _remember(response, jid, text)
 
 
 def send_voice(jid, ogg_opus, seconds, waveform=b""):

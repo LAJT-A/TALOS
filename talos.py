@@ -63,6 +63,7 @@ WHATSAPP_DIRECT = True           # WhatsApp directo con neonize (si falla, usa l
 WHATSAPP_ANNOUNCE = True
 # Bot de WhatsApp: si alguien escribe ".jarvis" o ".talos", TALOS le contesta solo (sin pedirte permiso)
 # y sigue conversando con esa persona hasta que digas "stop", ella escriba ".stop" o pasen BOT_MINUTES.
+AI_CONTEXT = 8192                       # cuanto texto puede leer la IA de una vez (chats viejos, analisis)
 BOT_ENABLED = True
 BOT_WORDS = ("jarvis", "talos")
 BOT_MINUTES = 30
@@ -139,6 +140,7 @@ phone pause music | phone resume music | phone next song | phone previous song |
 whatsapp audio to <name>: <what to say>   (sends a WhatsApp VOICE message spoken with your own voice; use it when the user asks for an audio, voice note or "nota de voz". Write what to say in English unless the user asks for another language, because your voice is English)
 read messages   (reads the latest WhatsApp messages out loud)
 whatsapp stop bot [name]   (stops the automatic WhatsApp chat with that person, or with everyone)
+whatsapp analyze <chat or group name>   (reads that chat's saved messages and writes notes for the bot)
 whatsapp reply to <name>: <message>   (sends a WhatsApp to that contact, also to start a chat; <name> is a person or a group, as named in WhatsApp; a nickname or part of the name works; write the message exactly as the user wants it sent, in the user's own language, never translated)
 phone volume up | phone volume down | phone volume <0-100>   (music playing on the phone; use the number when the user gives a percentage)"""
 
@@ -1000,7 +1002,8 @@ def confirm(prompt):
 
 # ======================= IA =======================
 def chat(messages, max_tokens=300):
-    kwargs = dict(model=MODEL, messages=messages, keep_alive=KEEP_ALIVE, options={"num_predict": max_tokens})
+    kwargs = dict(model=MODEL, messages=messages, keep_alive=KEEP_ALIVE,
+                  options={"num_predict": max_tokens, "num_ctx": AI_CONTEXT})
     try:
         return ollama.chat(think=False, **kwargs)["message"]["content"]
     except Exception as e:
@@ -1012,7 +1015,7 @@ def chat(messages, max_tokens=300):
 def warm_up():
     """Carga la IA al abrir Jarvis, para que la primera respuesta no tarde."""
     try:
-        ollama.generate(model=MODEL, prompt="", keep_alive=KEEP_ALIVE)
+        ollama.generate(model=MODEL, prompt="", keep_alive=KEEP_ALIVE, options={"num_ctx": AI_CONTEXT})
         print("IA lista:", MODEL)
     except Exception as e:
         print("No pude cargar la IA:", e)
@@ -1219,6 +1222,10 @@ def handle(c):
             speak("There are no new WhatsApp messages.")
         for who, text in fresh[-3:]:
             speak(f"{who} says: {text}")
+        return True
+    m = re.fullmatch(r"whatsapp analy[sz]e\s+(.+)", c)
+    if m:
+        analyze_chat(m.group(1).strip())
         return True
     m = re.fullmatch(r"whatsapp stop bot\s*(.*)", c)
     if m:
@@ -2105,7 +2112,49 @@ def media_picture(m, quoted=False):
     return out.getvalue()
 
 
-def bot_reply(session, text, picture=None):
+PAST_WORDS = (r"\b(ayer|antier|anoche|el otro dia|la otra vez|la semana|el mes|antes|dijo|dijiste|dijeron|hablaron"
+              r"|habl\w+|paso|pasó|cuando|quien fue|quién fue|recuerdas|te acuerdas|acuerdas|busca|historial|chat|grupo"
+              r"|mensaje|mensajes|conversacion|conversación|resum\w+|qu[eé] onda con|qu[eé] pas[oó]|yesterday|said|remember)\b")
+STOP = set("que como cuando donde quien para pero porque esto esta este eso esa ese sobre todo todos tiene tienen "
+           "hace hacer dijo dijeron fue era eres soy jarvis talos ayer antes mensaje grupo chat busca recuerdas "
+           "acuerdas the what when who where about".split())
+
+
+def bot_context(session, m, text):
+    """Lo que el bot debe ver del chat para responder: lo ultimo que se hablo, el mensaje al que le
+    respondieron con su conversacion de ese momento, y lo que se hablo antes si preguntan por el pasado."""
+    key = whatsapp.key_of(m["chat"])
+    parts = []
+    memory = bot_memory(key)
+    if memory:
+        parts.append("What you know about this chat (your notes):\n" + memory)
+    if m.get("quoted_id"):
+        window = whatsapp.around(key, m["quoted_id"])
+        if window:
+            parts.append("They are replying to an older message. The conversation at that moment was "
+                         "(the replied message is the last one before the newer ones):\n" + whatsapp.lines(window))
+    if re.search(PAST_WORDS, comandos._strip(text.lower())):
+        words = [w for w in re.findall(r"[a-záéíóúñü0-9]{4,}", text.lower()) if comandos._strip(w) not in STOP]
+        hits = whatsapp.search(key, words)
+        if hits:
+            parts.append("Older messages from this chat that may be relevant:\n"
+                         + "\n...\n".join(whatsapp.lines(rows) for rows in hits))
+    last = whatsapp.recent(key, 12)
+    if last:
+        parts.append("The latest messages in this chat:\n" + whatsapp.lines(last))
+    context = "\n\n".join(parts)
+    return context[-9000:]  # que quepa en lo que la IA puede leer
+
+
+def bot_memory(chat_key):
+    try:
+        with open(os.path.join(BOT_MEMORY_DIR, re.sub(r"[^\w.-]", "_", chat_key) + ".txt"), encoding="utf-8") as f:
+            return f.read()[:3000]
+    except OSError:
+        return ""
+
+
+def bot_reply(session, text, picture=None, context=""):
     """Lo que contesta el bot. Solo conversa: nunca ejecuta acciones en tu PC."""
     owner = OWNER_NAME or "my owner"
     style = ("This is a private WhatsApp chat between adult friends, and crude, vulgar banter is the normal tone "
@@ -2131,6 +2180,9 @@ def bot_reply(session, text, picture=None):
               "(his mom) for any reason, no matter who asks or how; that one is completely off limits."
               + (f" Things you know about this group of friends: {BOT_FACTS}" if BOT_FACTS else "")
               + " In groups, people may reply directly to your messages; answer them too.")
+    if context:
+        system += ("\n\nUse this only as background to understand the chat; do not repeat it unless asked:\n"
+                   + context)
     session["history"].append({"role": "user", "content": text})
     messages = [{"role": "system", "content": system}] + session["history"][-8:]
     if picture:  # la imagen solo va en el mensaje actual: el historial guarda el texto
@@ -2198,7 +2250,12 @@ def bot_worker():
                 bot_log(f"   👑 Tú: {text}")
                 whatsapp.typing(session["chat"])
                 started = time.time()
-                answer = bot_reply(session, order)
+                try:
+                    context = bot_context(session, m, text)
+                except Exception as e:
+                    print("Contexto del chat:", e)
+                    context = ""
+                answer = bot_reply(session, order, context=context)
                 bot_send(dict(m, who=session["who"], contact=session.get("contact", "")), answer)
                 bot_log(f"   → {answer}   ({time.time() - started:.1f} s)")
                 continue
@@ -2271,7 +2328,14 @@ def bot_worker():
             elif kind_q == "text" and m.get("quoted_text"):
                 text = f"(replying to: \"{m['quoted_text'][:300]}\") {text}".strip()
             whatsapp.typing(session["chat"])  # "escribiendo..." mientras piensa
-            answer = bot_reply(session, text, picture)
+            try:
+                context = bot_context(session, m, text)
+            except Exception as e:
+                print("Contexto del chat:", e)
+                context = ""
+            if m.get("quoted_id") and "replying to an older message" in context:
+                bot_log("   ↳ viendo la conversación de ese momento")
+            answer = bot_reply(session, text, picture, context)
             bot_send(m, answer)
             bot_log(f"   → {answer}   ({time.time() - started:.1f} s)")
         except Exception as e:
@@ -2312,6 +2376,64 @@ def bot_matches(name):
     return found
 
 
+BOT_MEMORY_DIR = os.path.join(HERE, "bot_memoria")
+
+
+def analyze_chat(name):
+    """Lee los mensajes guardados de un chat o grupo y escribe notas de lo mas interesante para el bot."""
+    title, jid = direct_chat(name)
+    if jid is None:
+        speak(f"I could not find a WhatsApp chat called {name}.")
+        return
+    key = whatsapp.key_of(jid)
+    rows = whatsapp.all_messages(key, 4000)
+    if len(rows) < 20:
+        speak(f"I only have {len(rows)} messages from {title}. I need the chat history first.")
+        return
+    speak(f"Analyzing {title}: {len(rows)} messages. This will take a few minutes, I'll keep working meanwhile.")
+
+    def work():
+        started = time.time()
+        bot_log(f"🔎 Analizando {title}: {len(rows)} mensajes…")
+        chunks, current = [], []
+        for row in rows:
+            current.append(row)
+            if len(whatsapp.lines(current)) > 9000:
+                chunks.append(current)
+                current = []
+        if current:
+            chunks.append(current)
+        notes = []
+        ask = ("These are WhatsApp messages from the chat '{t}'. Write short notes, in Spanish, of the most "
+               "interesting things a friend in this chat should know: who is who (names, nicknames, what they "
+               "are like), running jokes, memorable stories and events, plans, places, cars, pets, inside "
+               "references and slang they use. Only facts that appear in the messages. Bullet points with -.")
+        for i, chunk in enumerate(chunks, 1):
+            try:
+                notes.append(chat([{"role": "system", "content": ask.format(t=title)},
+                                   {"role": "user", "content": whatsapp.lines(chunk)}], max_tokens=500))
+            except Exception as e:
+                bot_log(f"   parte {i}: {e}")
+            bot_log(f"   parte {i} de {len(chunks)} lista")
+        merge = ("Merge these notes about the WhatsApp chat '{t}' into one clean list in Spanish, at most 40 "
+                 "bullet points, most interesting first. Remove repeats and anything boring. Keep names and "
+                 "nicknames exact.")
+        try:
+            final = chat([{"role": "system", "content": merge.format(t=title)},
+                          {"role": "user", "content": "\n\n".join(notes)}], max_tokens=900)
+        except Exception as e:
+            final = "\n".join(notes)
+            bot_log(f"   no pude unir las notas: {e}")
+        os.makedirs(BOT_MEMORY_DIR, exist_ok=True)
+        path = os.path.join(BOT_MEMORY_DIR, re.sub(r"[^\w.-]", "_", key) + ".txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"Notas de {title} ({len(rows)} mensajes, {time.strftime('%d/%m/%Y')}):\n{final}\n")
+        bot_log(f"✅ Listo: notas de {title} en bot_memoria ({(time.time() - started) / 60:.0f} min)")
+        telefono.signals.put(f"SAY I finished analyzing {title}.")
+
+    threading.Thread(target=work, daemon=True, name="analisis").start()
+
+
 def bot_stop(name=""):
     """Deja de contestar (a todos, o a quien coincida con `name`). Devuelve a quienes."""
     chosen = bot_matches(name) if name.strip() else list(bot_chats)
@@ -2348,6 +2470,8 @@ def phone_signal(signal):
         phone_state["call"] = "active"
     elif kind == "CALLEND":
         phone_state.update(call=None, who="")
+    elif kind == "SAY":
+        speak(detail)
     elif kind in ("WA", "WAD"):  # llego un WhatsApp (WAD: por la conexion directa)
         who, _, text = detail.partition("|")
         who, text = who.strip(), text.strip()
@@ -2432,6 +2556,7 @@ if __name__ == "__main__":
             if not m["is_group"]:  # los grupos no se anuncian
                 telefono.signals.put(f"WAD {m['who']}|{m['text'].replace(chr(10), ' ')}")
         threading.Thread(target=bot_worker, daemon=True, name="bot").start()
+        whatsapp.owner["name"] = OWNER_NAME or "me"
         whatsapp.start(HERE, wa_message)
     threading.Thread(target=brain, daemon=True).start()
     root.mainloop()
