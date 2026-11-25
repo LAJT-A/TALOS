@@ -2025,8 +2025,8 @@ def bot_incoming(m):
     if m.get("is_audio"):
         bot_queue.put(("audio", key, m, ""))
         return True
-    if not raw:
-        return True  # fotos, stickers...: el bot no los comenta
+    if not raw and not m.get("media"):
+        return True  # documentos, ubicaciones...: el bot no los comenta
     bot_queue.put(("msg", key, m, raw))
     return True
 
@@ -2070,7 +2070,30 @@ def transcribe_note(data):
     return max(options, key=lambda o: o[1])[0]
 
 
-def bot_reply(session, text):
+def media_picture(m):
+    """La foto, el sticker o un cuadro del video que mandaron, como PNG para que la IA lo vea. None si no se pudo."""
+    from PIL import Image
+    data = whatsapp.download_media(m["event"])
+    if m["media"] == "video":
+        import av
+        with av.open(io.BytesIO(data)) as src:
+            stream = src.streams.video[0]
+            seconds = float(stream.duration * stream.time_base) if stream.duration else 0
+            if seconds > 2:
+                src.seek(int(seconds / 2 / stream.time_base), stream=stream)  # un cuadro de la mitad
+            frame = next(src.decode(video=0))
+            picture = frame.to_image()
+    else:
+        picture = Image.open(io.BytesIO(data))
+        picture.seek(0)  # stickers animados: el primer cuadro
+    picture = picture.convert("RGB")
+    picture.thumbnail((1024, 1024))  # mas chica = la IA la mira mas rapido
+    out = io.BytesIO()
+    picture.save(out, format="PNG")
+    return out.getvalue()
+
+
+def bot_reply(session, text, picture=None):
     """Lo que contesta el bot. Solo conversa: nunca ejecuta acciones en tu PC."""
     owner = OWNER_NAME or "my owner"
     system = (f"You are Talos, also called Jarvis, the personal AI assistant of {owner}. You are chatting on "
@@ -2080,7 +2103,13 @@ def bot_reply(session, text):
               "information, messages, files, location or plans, and never promise anything on his behalf; if they "
               f"need something from {owner}, say you will let him know. No markdown, no lists.")
     session["history"].append({"role": "user", "content": text})
-    answer = chat([{"role": "system", "content": system}] + session["history"][-8:], max_tokens=160)
+    messages = [{"role": "system", "content": system}] + session["history"][-8:]
+    if picture:  # la imagen solo va en el mensaje actual: el historial guarda el texto
+        messages[-1] = dict(messages[-1], images=[picture])
+        system_note = (" They sent you a picture: look at it and comment on it naturally, like a friend would; "
+                       "describe or identify what is in it if they ask.")
+        messages[0] = {"role": "system", "content": system + system_note}
+    answer = chat(messages, max_tokens=160)
     answer = re.sub(r"^\W*DO:.*$", "", answer, flags=re.M | re.I).strip()  # por si acaso: aqui no hay acciones
     answer = re.sub(r"[*_`#]+", "", answer) or "🙂"
     session["history"].append({"role": "assistant", "content": answer})
@@ -2141,10 +2170,21 @@ def bot_worker():
                     continue
                 bot_log(f"   {session['who']}: 🎤 \"{text}\"")
                 text = f"(voice note) {text}"
-            else:
+            elif not m.get("media"):
                 bot_log(f"   {session['who']}: {text}")
+            picture = None
+            if m.get("media"):  # foto, sticker o video
+                whatsapp.typing(session["chat"])
+                try:
+                    picture = media_picture(m)
+                except Exception as e:
+                    print("Foto de WhatsApp:", e)
+                label = {"image": "photo", "sticker": "sticker", "video": "video"}[m["media"]]
+                icon = {"image": "📷", "sticker": "🎭", "video": "🎬"}[m["media"]]
+                bot_log(f"   {session['who']}: {icon} {text}".rstrip() + ("" if picture else " (no pude abrirla)"))
+                text = f"(sent a {label}{'' if picture else ' that could not be opened'}) {text}".strip()
             whatsapp.typing(session["chat"])  # "escribiendo..." mientras piensa
-            answer = bot_reply(session, text)
+            answer = bot_reply(session, text, picture)
             bot_send(m, answer)
             bot_log(f"   → {answer}   ({time.time() - started:.1f} s)")
         except Exception as e:

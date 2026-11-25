@@ -37,6 +37,7 @@ Cualquiera de tus contactos puede escribir **`.talos`** o **`.jarvis`** en el ch
 - `.talos ¿cómo estás?` → TALOS responde como en una conversación normal, en el idioma de la persona.
 - Desde ese momento sigue conversando con esa persona sin que tenga que volver a llamarlo.
 - Entiende **notas de voz**: las transcribe y contesta; si no entiende el audio, lo dice.
+- **Ve las fotos, stickers y videos** que le mandan y los comenta (de un video mira un cuadro del medio).
 - Contesta **citando** cada mensaje, así en un grupo se ve a quién le responde.
 - No te interrumpe: los chats activos y lo que responde a cada uno se ven en una ventana aparte, *Bot de WhatsApp*, y mientras piensa la persona ve "escribiendo…".
 - Se termina cuando dices **"stop"** (todos los chats) o solo uno: *"deja de responderle a Ana"*, *"para el chat con el grupo de fútbol"*, cuando la persona escribe `.stop`, o tras 30 minutos sin mensajes.

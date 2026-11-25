@@ -131,7 +131,11 @@ def _incoming(cl, ev, on_message):
     src = ev.Info.MessageSource
     if src.Chat.Server in ("broadcast", "newsletter"):
         return
-    raw = ev.Message.conversation or ev.Message.extendedTextMessage.text or ""
+    msg = ev.Message
+    media = ("image" if msg.HasField("imageMessage") else "sticker" if msg.HasField("stickerMessage")
+             else "video" if msg.HasField("videoMessage") else None)
+    raw = (msg.conversation or msg.extendedTextMessage.text or msg.imageMessage.caption
+           or msg.videoMessage.caption or "")
     if src.IsFromMe and not raw.lstrip().startswith("."):
         return  # lo tuyo solo interesa si es una orden para el bot (".jarvis ...", ".stop")
     text = _text_of(ev.Message)
@@ -149,7 +153,7 @@ def _incoming(cl, ev, on_message):
     on_message({"who": who, "name": (ev.Info.Pushname or name).split()[0] if (ev.Info.Pushname or name) else "",
                 "text": text, "raw": raw, "is_group": src.IsGroup, "chat": src.Chat,
                 "sender": src.Sender, "from_me": src.IsFromMe,
-                "is_audio": ev.Message.HasField("audioMessage"), "event": ev})
+                "is_audio": ev.Message.HasField("audioMessage"), "media": media, "event": ev})
 
 
 def _name_of_contact(cl, jid):
@@ -234,8 +238,11 @@ def typing(jid, on=True):
 
 
 def download_audio(ev):
-    """Bytes del audio (nota de voz) de un mensaje que llego."""
+    """Bytes del audio (nota de voz), foto, sticker o video de un mensaje que llego."""
     return _client.download_any(ev.Message)
+
+
+download_media = download_audio
 
 
 def reply_text(ev, text):
