@@ -68,6 +68,7 @@ BOT_WORDS = ("jarvis", "talos")
 BOT_MINUTES = 30
 BOT_SWEARING = False                    # el bot habla como un pana: groserías, jerga y chalequeo permitidos
 BOT_WINDOW = True                       # ventana aparte con los chats del bot (False: solo esta consola)
+BOT_SIGNATURES = {}  # firma al final de cada respuesta del bot a esa persona
 OWNER_INFO = ""  # lo que TALOS y el bot saben de ti (apodos, tu casa...)
 OWNER_NAME = ""                  # tu nombre, para que el bot diga de parte de quien habla         # avisar por las bocinas cuando llega un WhatsApp (solo dice de quien)
 PHONE_ALOUD = False              # True: lo que pidas desde el celular tambien se responde por las bocinas
@@ -2131,6 +2132,11 @@ def bot_reply(session, text, picture=None):
 
 def bot_send(m, text):
     """Contesta citando el mensaje de la persona: en un grupo se ve a quien le responde."""
+    names = comandos._strip(f"{m.get('who', '')} {m.get('name', '')}".lower())
+    for person, signature in BOT_SIGNATURES.items():
+        if comandos._strip(person.lower()) in names and signature not in text:
+            text = f"{text}\n\n{signature}"
+            break
     try:
         whatsapp.reply_text(m["event"], text)
     except Exception as e:
