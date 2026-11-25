@@ -60,7 +60,13 @@ COUNTRY_CODE = "58"              # prefijo para los contactos guardados sin codi
 # funciona solo ("pepe" encuentra "Pepe Trueno"); esto es para nombres que no se parecen en nada.
 NICKNAMES = {}
 WHATSAPP_DIRECT = True           # WhatsApp directo con neonize (si falla, usa la ventana de escritorio)
-WHATSAPP_ANNOUNCE = True         # avisar por las bocinas cuando llega un WhatsApp (solo dice de quien)
+WHATSAPP_ANNOUNCE = True
+# Bot de WhatsApp: si alguien escribe ".jarvis" o ".talos", TALOS le contesta solo (sin pedirte permiso)
+# y sigue conversando con esa persona hasta que digas "stop", ella escriba ".stop" o pasen BOT_MINUTES.
+BOT_ENABLED = True
+BOT_WORDS = ("jarvis", "talos")
+BOT_MINUTES = 30
+OWNER_NAME = ""                  # tu nombre, para que el bot diga de parte de quien habla         # avisar por las bocinas cuando llega un WhatsApp (solo dice de quien)
 PHONE_ALOUD = False              # True: lo que pidas desde el celular tambien se responde por las bocinas
 
 CLAP_ENABLED = True
@@ -127,6 +133,7 @@ answer call | end call   (calls on the user's phone)
 phone pause music | phone resume music | phone next song | phone previous song | phone play <song or artist>   (search and play it on the phone)
 whatsapp audio to <name>: <what to say>   (sends a WhatsApp VOICE message spoken with your own voice; use it when the user asks for an audio, voice note or "nota de voz". Write what to say in English unless the user asks for another language, because your voice is English)
 read messages   (reads the latest WhatsApp messages out loud)
+whatsapp stop bot [name]   (stops the automatic WhatsApp chat with that person, or with everyone)
 whatsapp reply to <name>: <message>   (sends a WhatsApp to that contact, also to start a chat; <name> is a person or a group, as named in WhatsApp; a nickname or part of the name works; write the message exactly as the user wants it sent, in the user's own language, never translated)
 phone volume up | phone volume down | phone volume <0-100>   (music playing on the phone; use the number when the user gives a percentage)"""
 
@@ -1208,6 +1215,12 @@ def handle(c):
         for who, text in fresh[-3:]:
             speak(f"{who} says: {text}")
         return True
+    m = re.fullmatch(r"whatsapp stop bot\s*(.*)", c)
+    if m:
+        stopped = bot_stop(m.group(1))
+        speak("Okay, I stopped chatting with " + " and ".join(stopped) + "." if stopped
+              else "I was not chatting with anyone on WhatsApp.")
+        return True
     m = re.fullmatch(r"whatsapp audio(?: to ([^:]*))?:\s*(.+)", c)
     if m:
         whatsapp_audio((m.group(1) or "").strip(), m.group(2).strip())
@@ -1416,6 +1429,15 @@ def run(text):
     if re.fullmatch(END_WORDS, " ".join(words)):
         speak("Anytime.")
         return False
+    if bot_chats:  # el bot esta conversando con alguien por WhatsApp
+        quiet = re.fullmatch(r"(stop|stop it|para|parar|parale|detente|deten|basta|ya basta)", " ".join(words))
+        named = re.search(r"\b(deja|dejes|para|parar|stop|deten|detente)\b.*\b(respond\w*|contest\w*|habla\w*|escrib\w*"
+                          r"|chat\w*|answer\w*|repl\w*|talking|bot)\b(?:\s+(?:a|al|con|to|with)\s+(.+))?", plain)
+        if quiet or named:
+            stopped = bot_stop((named.group(3) or "") if named else "")
+            if stopped:
+                speak("Okay, I stopped chatting with " + " and ".join(stopped) + ".")
+                return True
     command = comandos.to_command(said)
     set_state("thinking", said)
     only_save = command == "screenshot" and not re.search(LOOK_VERBS, plain)
@@ -1938,6 +1960,101 @@ def whatsapp_send(name, message):
         speak(f"I could not find a WhatsApp chat called {who}.")
 
 
+# ======================= BOT DE WHATSAPP =======================
+
+bot_chats = {}             # clave del chat -> {"chat", "name", "history", "last"}
+bot_queue = queue.Queue()  # el bot trabaja en su propio hilo: no te quita a TALOS mientras habla
+
+
+def bot_key(m):
+    """En un chat privado, el chat; en un grupo, la persona dentro de ese grupo."""
+    key = whatsapp.key_of(m["chat"])
+    return key + "|" + whatsapp.key_of(m["sender"]) if m["is_group"] else key
+
+
+def bot_incoming(m):
+    """Decide si un mensaje es para el bot. True si lo atiende el bot (y no hay que avisarlo)."""
+    if not BOT_ENABLED:
+        return False
+    raw = (m["raw"] or "").strip()
+    key = bot_key(m)
+    words = "|".join(BOT_WORDS)
+    called = re.match(rf"^\.\s*({words})\b[\s,:;!?.]*(.*)$", raw, flags=re.I | re.S)
+    asked_stop = re.match(r"^\.\s*(stop|para|basta|bye|chao)\b", raw, flags=re.I) or (
+        called and re.fullmatch(r"(stop|para|basta|bye|chao|adios)\W*", comandos._strip(called.group(2).lower())))
+    if asked_stop:
+        if key in bot_chats or (m["from_me"] and not m["is_group"]):
+            bot_queue.put(("stop", key, m, ""))
+        return True
+    if called:
+        bot_queue.put(("start", key, m, called.group(2).strip()))
+        return True
+    if m["from_me"] or key not in bot_chats:
+        return False
+    bot_queue.put(("msg", key, m, raw))
+    return True
+
+
+def bot_reply(session, text):
+    """Lo que contesta el bot. Solo conversa: nunca ejecuta acciones en tu PC."""
+    owner = OWNER_NAME or "my owner"
+    system = (f"You are Talos, also called Jarvis, the personal AI assistant of {owner}. You are chatting on "
+              f"WhatsApp with {session['name']}, a contact of {owner}. Reply in the same language they write in, "
+              "short and natural like a WhatsApp message, friendly, with a bit of humor. You cannot do anything on "
+              f"{owner}'s computer or phone from this chat and must not pretend to. Never share {owner}'s private "
+              "information, messages, files, location or plans, and never promise anything on his behalf; if they "
+              f"need something from {owner}, say you will let him know. No markdown, no lists.")
+    session["history"].append({"role": "user", "content": text})
+    answer = chat([{"role": "system", "content": system}] + session["history"][-12:])
+    answer = re.sub(r"^\W*DO:.*$", "", answer, flags=re.M | re.I).strip()  # por si acaso: aqui no hay acciones
+    answer = re.sub(r"[*_`#]+", "", answer) or "🙂"
+    session["history"].append({"role": "assistant", "content": answer})
+    return answer[:1500]
+
+
+def bot_worker():
+    while True:
+        kind, key, m, text = bot_queue.get()
+        try:
+            session = bot_chats.get(key)
+            if session and time.time() - session["last"] > BOT_MINUTES * 60:
+                bot_chats.pop(key, None)  # demasiado tiempo sin hablar: se termina sola
+                session = None
+            if kind == "stop":
+                if bot_chats.pop(key, None) or m["from_me"]:
+                    whatsapp.send_text(m["chat"], "Okay, I'll stop here. Bye! 👋")
+                    print("Bot de WhatsApp: termino con", m["who"])
+                continue
+            if kind == "start":
+                if not session:
+                    who = m["who"] if not m["from_me"] else "this chat"
+                    session = bot_chats[key] = {"chat": m["chat"], "name": m["name"] or "friend",
+                                                "who": who, "history": [], "last": time.time()}
+                    telefono.signals.put(f"BOT {who}")  # TALOS te avisa en voz alta
+                if not text:
+                    whatsapp.send_text(m["chat"], f"Yes, {m['name']}?" if not m["from_me"] else "Yes?")
+                    continue
+            if kind == "msg" and not session:
+                continue
+            session["last"] = time.time()
+            answer = bot_reply(session, text)
+            print(f"Bot de WhatsApp -> {session['who']}: {answer[:100]}")
+            whatsapp.send_text(session["chat"], answer)
+        except Exception as e:
+            print("Bot de WhatsApp:", e)
+
+
+def bot_stop(name=""):
+    """Deja de contestar (a todos, o a quien coincida con `name`). Devuelve a quienes."""
+    key = comandos._strip(name.lower()).strip()
+    stopped = []
+    for k, session in list(bot_chats.items()):
+        if not key or key in comandos._strip(session["who"].lower()):
+            bot_chats.pop(k, None)
+            stopped.append(session["who"])
+    return stopped
+
+
 def phone_signal(signal):
     """Avisos de la app del telefono: llamadas y errores."""
     print("Phone:", "#" + signal[:80])
@@ -1961,6 +2078,8 @@ def phone_signal(signal):
         phone_state["call"] = "active"
     elif kind == "CALLEND":
         phone_state.update(call=None, who="")
+    elif kind == "BOT":  # alguien llamo al bot por WhatsApp
+        speak(f"Sir, I'm chatting with {detail} on WhatsApp. Say stop when you want me to stop.")
     elif kind in ("WA", "WAD"):  # llego un WhatsApp (WAD: por la conexion directa)
         who, _, text = detail.partition("|")
         who, text = who.strip(), text.strip()
@@ -2039,9 +2158,12 @@ if __name__ == "__main__":
     if PHONE_ENABLED:
         telefono.start(PHONE_PORT)
     if WHATSAPP_DIRECT:
-        def wa_message(who, text, is_group, jid):
-            if not is_group:  # los grupos no se anuncian
-                telefono.signals.put(f"WAD {who}|{text.replace(chr(10), ' ')}")
+        def wa_message(m):
+            if bot_incoming(m) or m["from_me"]:
+                return  # lo atiende el bot
+            if not m["is_group"]:  # los grupos no se anuncian
+                telefono.signals.put(f"WAD {m['who']}|{m['text'].replace(chr(10), ' ')}")
+        threading.Thread(target=bot_worker, daemon=True, name="bot").start()
         whatsapp.start(HERE, wa_message)
     threading.Thread(target=brain, daemon=True).start()
     root.mainloop()

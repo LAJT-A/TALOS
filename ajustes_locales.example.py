@@ -13,6 +13,9 @@ NICKNAMES = {
     "mi hermano": "Carlos Pérez",
 }
 
+# Tu nombre, para el bot de WhatsApp ("Soy la IA de ...").
+OWNER_NAME = ""
+
 # Prefijo de país para números guardados sin "+".
 COUNTRY_CODE = "58"
 

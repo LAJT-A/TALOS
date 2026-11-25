@@ -29,6 +29,18 @@ tus apps, tu música, tu WhatsApp y hasta tu celular.
 | 📱 **Tu celular** | Con [**TMC**](#-talos-mobile-connection-tmc) le hablas desde el teléfono, y TALOS controla la música del celular, contesta y cuelga llamadas y te avisa de los mensajes. |
 | 🎮 **Modo gamer** | Cierra lo que consume recursos en segundo plano y libera la IA de la memoria. La "noche de juegos" además abre tu juego. |
 
+## 🤖 Bot de WhatsApp
+
+Cualquiera de tus contactos puede escribir **`.talos`** o **`.jarvis`** en el chat y TALOS le contesta solo:
+
+- `.jarvis` a secas → *"Yes, Ana?"*
+- `.talos ¿cómo estás?` → TALOS responde como en una conversación normal, en el idioma de la persona.
+- Desde ese momento sigue conversando con esa persona sin que tenga que volver a llamarlo.
+- Se termina cuando dices **"stop"** (o *"deja de responderle a Ana"*), cuando la persona escribe `.stop`, o tras 30 minutos sin mensajes.
+
+Por seguridad, en estas conversaciones TALOS solo charla: no ejecuta nada en tu PC, no cuenta tus datos y no
+promete nada por ti. Pon tu nombre en `OWNER_NAME` para que diga de parte de quién habla.
+
 ## 📱 TALOS Mobile Connection (TMC)
 
 TALOS se puede usar con **[TMC](https://github.com/LAJT-A/TALOS-Mobile-Connection)**, su app de Android.

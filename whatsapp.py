@@ -25,7 +25,7 @@ def ready():
 
 
 def start(folder, on_message, on_status=print):
-    """Conecta en segundo plano. on_message(nombre, texto, es_grupo, jid) por cada mensaje que llega."""
+    """Conecta en segundo plano. on_message(dict) por cada mensaje que llega (ver _incoming)."""
     try:
         import neonize  # noqa: F401  (solo comprueba que esta instalado)
     except ImportError:
@@ -38,7 +38,12 @@ def start(folder, on_message, on_status=print):
 
 def _run(folder, on_message, on_status):
     global _client
+    import logging
     from neonize.client import NewClient
+    from neonize.utils.log import log as neonize_log
+    # solo avisos y errores: sin esto la consola se llena con la sincronizacion del historial
+    for logger in (neonize_log, logging.getLogger("whatsmeow"), logging.getLogger("Whatsmeow")):
+        logger.setLevel(logging.WARNING)
     from neonize.events import ConnectedEv, LoggedOutEv, MessageEv, PairStatusEv
 
     db = os.path.join(folder, "whatsapp.db")
@@ -120,19 +125,30 @@ def _jid_text(jid):
 
 
 def _incoming(cl, ev, on_message):
+    """Pasa a TALOS cada mensaje que llega como un dict:
+    who (quien, para avisar), name (nombre corto), text (descripcion legible), raw (el texto tal cual,
+    o "" si es foto/audio...), is_group, chat, sender, from_me."""
     src = ev.Info.MessageSource
-    if src.IsFromMe or src.Chat.Server in ("broadcast", "newsletter"):
+    if src.Chat.Server in ("broadcast", "newsletter"):
         return
+    raw = ev.Message.conversation or ev.Message.extendedTextMessage.text or ""
+    if src.IsFromMe and not raw.lstrip().startswith("."):
+        return  # lo tuyo solo interesa si es una orden para el bot (".jarvis ...", ".stop")
     text = _text_of(ev.Message)
     if not text:
         return
+    name = _name_of_contact(cl, src.Sender) or ev.Info.Pushname or src.Sender.User
     if src.IsGroup:
         group = _name_of_group(cl, src.Chat)
-        who = f"{ev.Info.Pushname or 'someone'} in {group}"
+        who = f"{ev.Info.Pushname or name} in {group}"
+        _seen[_jid_text(src.Chat)] = (group, src.Chat)
     else:
-        who = _name_of_contact(cl, src.Sender) or ev.Info.Pushname or src.Sender.User
-    _seen[_jid_text(src.Chat)] = (group if src.IsGroup else who, src.Chat)
-    on_message(who, text, src.IsGroup, src.Chat)
+        who = name
+        if not src.IsFromMe:
+            _seen[_jid_text(src.Chat)] = (who, src.Chat)
+    on_message({"who": who, "name": (ev.Info.Pushname or name).split()[0] if (ev.Info.Pushname or name) else "",
+                "text": text, "raw": raw, "is_group": src.IsGroup, "chat": src.Chat,
+                "sender": src.Sender, "from_me": src.IsFromMe})
 
 
 def _name_of_contact(cl, jid):
@@ -193,6 +209,11 @@ def find_chat(name, score):
             if s is not None and (best is None or s < best[0]):
                 best = (s, title, jid)
     return (best[1], best[2]) if best else (None, None)
+
+
+def key_of(jid):
+    """Texto unico de un JID, para usarlo como clave."""
+    return _jid_text(jid)
 
 
 def jid_for_number(number):
