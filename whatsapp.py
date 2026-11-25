@@ -148,7 +148,8 @@ def _incoming(cl, ev, on_message):
             _seen[_jid_text(src.Chat)] = (who, src.Chat)
     on_message({"who": who, "name": (ev.Info.Pushname or name).split()[0] if (ev.Info.Pushname or name) else "",
                 "text": text, "raw": raw, "is_group": src.IsGroup, "chat": src.Chat,
-                "sender": src.Sender, "from_me": src.IsFromMe})
+                "sender": src.Sender, "from_me": src.IsFromMe,
+                "is_audio": ev.Message.HasField("audioMessage"), "event": ev})
 
 
 def _name_of_contact(cl, jid):
@@ -230,6 +231,16 @@ def typing(jid, on=True):
         _client.send_chat_presence(jid, state, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT)
     except Exception:
         pass
+
+
+def download_audio(ev):
+    """Bytes del audio (nota de voz) de un mensaje que llego."""
+    return _client.download_any(ev.Message)
+
+
+def reply_text(ev, text):
+    """Responde citando el mensaje `ev`, para que en un grupo se vea a quien le contesta."""
+    _client.reply_message(text, ev)
 
 
 def send_text(jid, text):

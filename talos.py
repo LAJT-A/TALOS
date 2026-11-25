@@ -2022,8 +2022,52 @@ def bot_incoming(m):
         return True
     if m["from_me"] or key not in bot_chats:
         return False
+    if m.get("is_audio"):
+        bot_queue.put(("audio", key, m, ""))
+        return True
+    if not raw:
+        return True  # fotos, stickers...: el bot no los comenta
     bot_queue.put(("msg", key, m, raw))
     return True
+
+
+note_recognizer = sr.Recognizer()
+note_recognizer.operation_timeout = 25  # las notas de voz son mas largas que una orden
+
+
+def transcribe_note(data):
+    """Texto de una nota de voz de WhatsApp (OGG/Opus). "" si no se entiende, None si Google no responde."""
+    import av
+    pcm = bytearray()
+    with av.open(io.BytesIO(data)) as src:
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+        for frame in src.decode(audio=0):
+            for part in resampler.resample(frame):
+                pcm += part.to_ndarray().tobytes()
+            if len(pcm) > 16000 * 2 * 58:  # Google acepta hasta ~1 minuto
+                break
+    if len(pcm) < 16000 * 2 * 0.4:
+        return ""
+    audio = sr.AudioData(bytes(pcm[:16000 * 2 * 58]), 16000, 2)
+
+    def ask(lang):
+        try:
+            res = note_recognizer.recognize_google(audio, language=lang, show_all=True)
+        except sr.UnknownValueError:
+            return []
+        except Exception as e:
+            print(f"Nota de voz ({lang}):", e)
+            return None
+        alt = (res or {}).get("alternative") or []
+        return [(a.get("transcript", ""), a.get("confidence", 0.5)) for a in alt[:1] if a.get("transcript")]
+
+    results = list(pool.map(ask, ("es-VE", "en-US")))  # primero español: tus contactos escriben en español
+    if all(r is None for r in results):
+        return None
+    options = [opt for r in results if r for opt in r]
+    if not options:
+        return ""
+    return max(options, key=lambda o: o[1])[0]
 
 
 def bot_reply(session, text):
@@ -2043,6 +2087,15 @@ def bot_reply(session, text):
     return answer[:1500]
 
 
+def bot_send(m, text):
+    """Contesta citando el mensaje de la persona: en un grupo se ve a quien le responde."""
+    try:
+        whatsapp.reply_text(m["event"], text)
+    except Exception as e:
+        print("Bot de WhatsApp (citar):", e)
+        whatsapp.send_text(m["chat"], text)
+
+
 def bot_worker():
     while True:
         kind, key, m, text = bot_queue.get()
@@ -2053,7 +2106,7 @@ def bot_worker():
                 session = None
             if kind == "stop":
                 if bot_chats.pop(key, None) or m["from_me"]:
-                    whatsapp.send_text(m["chat"], "Okay, I'll stop here. Bye! 👋")
+                    bot_send(m, "Okay, I'll stop here. Bye! 👋")
                     bot_log(f"■ Terminó con {m['who']}.  {bot_active()}")
                 continue
             if kind == "start":
@@ -2064,18 +2117,35 @@ def bot_worker():
                     bot_log(f"▶ Empezó con {who}.  {bot_active()}")
                 if not text:
                     reply = f"Yes, {m['name']}?" if not m["from_me"] else "Yes?"
-                    whatsapp.send_text(m["chat"], reply)
+                    bot_send(m, reply)
                     bot_log(f"   {who}: .jarvis")
                     bot_log(f"   → {reply}")
                     continue
-            if kind == "msg" and not session:
+            if kind in ("msg", "audio") and not session:
                 continue
             session["last"] = time.time()
-            bot_log(f"   {session['who']}: {text}")
-            whatsapp.typing(session["chat"])  # "escribiendo..." mientras piensa
             started = time.time()
+            if kind == "audio":
+                whatsapp.typing(session["chat"])
+                try:
+                    text = transcribe_note(whatsapp.download_audio(m["event"]))
+                except Exception as e:
+                    print("Nota de voz:", e)
+                    text = ""  # audio dañado o vacio: no se entendio
+                if not text:
+                    sorry = ("No te entendí el audio 😅 ¿Me lo repites o me lo escribes?" if text == ""
+                             else "No pude escuchar tu audio ahorita 😅 ¿Me lo escribes?")
+                    bot_send(m, sorry)
+                    bot_log(f"   {session['who']}: 🎤 (no se entendió)")
+                    bot_log(f"   → {sorry}")
+                    continue
+                bot_log(f"   {session['who']}: 🎤 \"{text}\"")
+                text = f"(voice note) {text}"
+            else:
+                bot_log(f"   {session['who']}: {text}")
+            whatsapp.typing(session["chat"])  # "escribiendo..." mientras piensa
             answer = bot_reply(session, text)
-            whatsapp.send_text(session["chat"], answer)
+            bot_send(m, answer)
             bot_log(f"   → {answer}   ({time.time() - started:.1f} s)")
         except Exception as e:
             bot_log(f"Error: {e}")
