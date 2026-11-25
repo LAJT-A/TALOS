@@ -13,6 +13,9 @@ NICKNAMES = {
     "mi hermano": "Carlos Pérez",
 }
 
+# Lo que TALOS y el bot saben de ti (apodos, como se llama tu casa...).
+OWNER_INFO = ""
+
 # Tu nombre, para el bot de WhatsApp ("Soy la IA de ...").
 OWNER_NAME = ""
 

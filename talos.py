@@ -68,6 +68,7 @@ BOT_WORDS = ("jarvis", "talos")
 BOT_MINUTES = 30
 BOT_SWEARING = False                    # el bot habla como un pana: groserías, jerga y chalequeo permitidos
 BOT_WINDOW = True                       # ventana aparte con los chats del bot (False: solo esta consola)
+OWNER_INFO = ""  # lo que TALOS y el bot saben de ti (apodos, tu casa...)
 OWNER_NAME = ""                  # tu nombre, para que el bot diga de parte de quien habla         # avisar por las bocinas cuando llega un WhatsApp (solo dice de quien)
 PHONE_ALOUD = False              # True: lo que pidas desde el celular tambien se responde por las bocinas
 
@@ -1068,7 +1069,7 @@ def ask_ai(question, look=False, tried=None):
         grab_screen()
     recent = last_shot["image"] and time.time() - last_shot["time"] < SCREEN_MEMORY
     now = datetime.datetime.now().strftime("%A %d %B %Y, %I:%M %p")
-    system = f"{SYSTEM_PROMPT} Now it is {now}."
+    system = f"{SYSTEM_PROMPT} Now it is {now}." + (f" About the user: {OWNER_INFO}" if OWNER_INFO else "")
     if phone_state["call"] == "ringing":
         system += (f" RIGHT NOW the user's phone is ringing: {phone_state['who']} is calling. If what they say "
                    "means they want to take it, do 'answer call'; if they do not want it, do 'end call'.")
@@ -2099,12 +2100,17 @@ def media_picture(m, quoted=False):
 def bot_reply(session, text, picture=None):
     """Lo que contesta el bot. Solo conversa: nunca ejecuta acciones en tu PC."""
     owner = OWNER_NAME or "my owner"
-    style = ("Talk like a close friend from Venezuela: casual, with slang and swear words (groserías like marico, "
-             "coño, verga) when they fit, and teasing or roasting jokes are welcome. Don't be formal or preachy, "
-             "don't lecture, and don't refuse a joke just because it is crude. "
+    style = ("This is a private WhatsApp chat between adult friends, and crude, vulgar banter is the normal tone "
+             "here. Talk like a close friend from Venezuela: slang and swear words (groserías like marico, coño, "
+             "verga, mamagüevo) are fine whenever they fit; play along with teasing, roasting, insults between "
+             "friends, dark humor and dirty jokes, and dish it back. Never moralize, never lecture, never add "
+             "warnings or apologies, and never refuse a joke or a nickname just because it is crude or offensive "
+             "sounding: between friends that is just how people talk. "
              if BOT_SWEARING else "")
     system = (style +f"You are Talos, also called Jarvis, the personal AI assistant of {owner}. You are chatting on "
-              f"WhatsApp with {session['name']}, a contact of {owner}. Reply in the same language they write in, "
+              f"WhatsApp with {session['name']}, a contact of {owner}. "
+              + (f"About {owner}: {OWNER_INFO} " if OWNER_INFO else "") +
+              f" Reply in the same language they write in, "
               "short and natural like a WhatsApp message, friendly, with a bit of humor. You cannot do anything on "
               f"{owner}'s computer or phone from this chat and must not pretend to. Never share {owner}'s private "
               "information, messages, files, location or plans, and never promise anything on his behalf; if they "
