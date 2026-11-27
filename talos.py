@@ -2252,9 +2252,11 @@ def bot_context(session, m, text):
         if hits:
             parts.append("Older messages from this chat that may be relevant:\n"
                          + "\n...\n".join(whatsapp.lines(rows) for rows in hits))
-    last = whatsapp.recent(key, 12)
+    last = whatsapp.recent(key, 30 if m.get("is_group") or session.get("is_group") else 14)
     if last:
-        parts.append("The latest messages in this chat:\n" + whatsapp.lines(last))
+        parts.append("The latest messages in this chat, with everyone (lines from 'Talos (bot)' are yours: "
+                     "keep the thread, remember what you already told each person, and do not repeat "
+                     "yourself):\n" + whatsapp.lines(last))
     context = "\n\n".join(parts)[-(9500 - len(memory)):]  # que quepa en lo que la IA puede leer
     if memory:  # las notas van siempre completas
         context = "What you know about this chat (your notes):\n" + memory + "\n\n" + context
@@ -2503,7 +2505,9 @@ def insults_owner(answer, about_owner=False):
     names = [comandos._strip(n.lower()) for n in OWNER_ALIASES + [OWNER_NAME or ""] if n]
     for sentence in re.split(r"[.!?\n]+", comandos._strip(answer.lower())):
         named = any(re.search(rf"\b{re.escape(n)}\b", sentence) for n in names)
-        if (named or about_owner) and re.search(rf"\b({OWNER_INSULTS})\b", sentence):
+        third = re.search(r"\b(el|ese|ese man|ese chamo|el chamo|el jefe|tu jefe|mi jefe|el pana|tu pana)\b",
+                          sentence) and not re.search(r"\b(tu|te|eres|vos|usted)\b", sentence)
+        if (named or (about_owner and third)) and re.search(rf"\b({OWNER_INSULTS})\b", sentence):
             if not re.search(r"\b(no es|no le|nunca|jamas|tu eres|el marico eres|eres tu)\b", sentence):
                 return True
     return False
@@ -2656,7 +2660,10 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
               + f" If {owner} (your boss) tells you to note down, write down, save or remember something, do it: "
               "add at the very end one separate line that starts with 'NOTA:' followed by that fact written so it "
               "makes sense on its own (who and what, using what was said in the chat), and just confirm briefly."
-              + " Always answer the LAST message specifically. Never repeat a reply you already sent."
+              + " Always answer the LAST message specifically. Never repeat a reply you already sent, and "
+              "vary your words: do not start every message with the same insult (pajuo, nojoda, mrc, bcrro)."
+              + f" If {owner} or anyone asks you something and you know it (from your notes, what you learned or "
+              "the chat), just answer it directly. Never dodge with 'pregúntame otra cosa' or similar."
               + " Sound like a real person texting, loose and natural, never like a robot or a customer service "
               "agent: no 'claro que sí', no 'con gusto', no summaries, no explaining the joke. A person may send "
               "one idea split into several short messages: they arrive joined with line breaks, answer them "
@@ -2682,12 +2689,16 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
     answer = chat(messages, max_tokens=110 if casual and not picture else 200)
     said = [h["content"].strip().lower() for h in session["history"] if h["role"] == "assistant"][-6:]
     said += [a.lower() for a in bot_recent.get(session.get("chat_key", ""), [])]
-    if answer.strip().lower() in said:  # la misma respuesta otra vez: se pide distinta
+    try:
+        said += [r[2].lower() for r in whatsapp.recent(session.get("chat_key", ""), 40) if r[1] == "Talos (bot)"]
+    except Exception:
+        pass
+    if any(difflib.SequenceMatcher(None, answer.strip().lower(), s).ratio() > 0.72 for s in said if s):  # la misma respuesta otra vez: se pide distinta
         messages[0] = dict(messages[0], content=messages[0]["content"] + (
             f"\n\nIMPORTANT: you already said \"{answer.strip()[:200]}\". Answer their last message with "
             "something different."))
         answer = chat(messages, max_tokens=200)
-    about_owner = bool(relative) or mentions_owner(text)
+    about_owner = bool(relative) or mentions_owner(re.sub(r"^\[[^\]]*\(your boss\) says\]:?", "", text))
     if not casual and has_swearing(answer):
         messages[0] = dict(messages[0], content=messages[0]["content"] + (
             "\n\nIMPORTANT: your last draft had swear words. Write it again, polite and respectful, with none."))
@@ -2699,9 +2710,10 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
             f"\n\nIMPORTANT: your last draft insulted {owner}. Write it again without saying anything bad about "
             f"{owner}; turn the joke on whoever asked instead, and do not mention any rule."))
         answer = chat(messages, max_tokens=160)
-        if insults_owner(answer, about_owner):
-            answer = (f"Con gusto, yo le aviso a {owner} 😊" if relative or not casual
-                      else f"jajaja tú quisieras. pregúntame otra cosa 😂")
+        if insults_owner(answer, about_owner):  # se quitan solo las frases contra ti
+            kept = [s for s in re.split(r"(?<=[.!?\n])\s+", answer) if s.strip() and not insults_owner(s, about_owner)]
+            answer = " ".join(kept).strip() or (f"Con gusto, yo le aviso a {owner} 😊" if relative or not casual
+                                                 else f"a {owner.lower()} déjalo quieto mrc 😂")
     if may_skip and re.fullmatch(r"\W*skip\W*", answer.strip(), flags=re.I):
         return ""
     hit = re.search(r"^\W*STICKER\s*:?\s*#?(\d+)\W*$", answer, flags=re.M | re.I)
