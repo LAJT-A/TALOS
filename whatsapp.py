@@ -303,6 +303,8 @@ def _incoming(cl, ev, on_message):
         who = name if not src.IsFromMe else (_name_of_contact(cl, src.Chat) or src.Chat.User)
         if not src.IsFromMe:
             _seen[_jid_text(src.Chat)] = (who, src.Chat)
+    if media == "sticker" and STICKERS["folder"]:
+        threading.Thread(target=_save_sticker, args=(ev,), daemon=True).start()
     if (_seconds(ev.Info.Timestamp) or time.time()) < _started[0] - 20:
         return  # llego mientras TALOS estaba cerrado: queda guardado (lo puede leer), pero no se responde
     on_message({"who": who, "name": (ev.Info.Pushname or name).split()[0] if (ev.Info.Pushname or name) else "",
@@ -476,6 +478,40 @@ def download_audio(ev):
 
 
 download_media = download_audio
+
+
+STICKERS = {"folder": None}   # carpeta donde se guardan los stickers que te mandan (el bot los reusa)
+
+
+def _save_sticker(ev):
+    try:
+        import hashlib
+        data = _client.download_any(ev.Message)
+        if not data or data[:4] != b"RIFF" or len(data) > 900_000:
+            return
+        folder = STICKERS["folder"]
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, hashlib.sha1(data).hexdigest()[:16] + ".webp")
+        if not os.path.exists(path):
+            with open(path, "wb") as f:
+                f.write(data)
+            files = sorted((os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".webp")),
+                           key=os.path.getmtime)
+            for old in files[:-120]:  # maximo 120: se van los mas viejos
+                os.remove(old)
+    except Exception as e:
+        print("Sticker:", e)
+
+
+def send_sticker(jid, data, ev=None):
+    """Manda un sticker (bytes .webp tal cual), respondiendo a ev si se puede."""
+    try:
+        response = _client.send_sticker(jid, data, quoted=ev, passthrough=True) if ev is not None else None
+    except Exception:
+        response = None
+    if response is None:
+        response = _client.send_sticker(jid, data, passthrough=True)
+    _remember(response, jid, "(sticker)")
 
 
 def download_quoted(m):

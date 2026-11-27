@@ -2522,6 +2522,83 @@ def is_filler(text):
     return True
 
 
+STICKER_DIR = os.path.join(HERE, "bot_stickers")   # los stickers que te mandan; el bot los reusa
+STICKER_INFO = os.path.join(STICKER_DIR, "stickers.json")
+sticker_lock = threading.Lock()
+
+
+def sticker_list():
+    """{archivo: descripcion} de los stickers que el bot ya sabe que son."""
+    try:
+        with open(STICKER_INFO, encoding="utf-8") as f:
+            info = json.load(f)
+    except Exception:
+        return {}
+    return {k: v for k, v in info.items() if v and os.path.exists(os.path.join(STICKER_DIR, k))}
+
+
+def sticker_describer():
+    """Mira cada sticker nuevo una vez (con la IA) y anota que es, para poder usarlo despues."""
+    time.sleep(60)
+    while True:
+        try:
+            with sticker_lock:
+                try:
+                    with open(STICKER_INFO, encoding="utf-8") as f:
+                        info = json.load(f)
+                except Exception:
+                    info = {}
+            files = [f for f in os.listdir(STICKER_DIR) if f.endswith(".webp") and f not in info] \
+                if os.path.isdir(STICKER_DIR) else []
+            for f in files[:5]:
+                while not bot_queue.empty():
+                    time.sleep(5)
+                from PIL import Image
+                img = Image.open(os.path.join(STICKER_DIR, f)).convert("RGBA")
+                back = Image.new("RGBA", img.size, (255, 255, 255, 255))
+                back.alpha_composite(img)
+                out = io.BytesIO()
+                back.convert("RGB").resize((256, 256)).save(out, "PNG")
+                desc = chat([{"role": "user", "images": [out.getvalue()], "content":
+                              "Esto es un sticker de WhatsApp. En maximo 10 palabras en español: que muestra y "
+                              "que reaccion transmite (risa, burla, wtf, asco, tristeza, ok, enojo...). Solo eso."}],
+                            max_tokens=40).strip().splitlines()[0][:90]
+                info[f] = desc
+                with sticker_lock, open(STICKER_INFO, "w", encoding="utf-8") as fh:
+                    json.dump(info, fh, ensure_ascii=False, indent=1)
+            for f in list(info):
+                if not os.path.exists(os.path.join(STICKER_DIR, f)):
+                    info.pop(f)
+        except Exception as e:
+            print("Stickers:", e)
+        time.sleep(120)
+
+
+def sticker_prompt(casual):
+    stickers = list(sticker_list().items())[-30:]
+    if not casual or not stickers:
+        return ""
+    menu = "; ".join(f"{i + 1}: {d}" for i, (_, d) in enumerate(stickers))
+    return (" You can also send a WhatsApp sticker: add at the very end one separate line 'STICKER: <number>' "
+            "choosing from this list: " + menu + ". Use one now and then (not every time): when someone says "
+            "something dumb, to mock them, or after a long message of yours to lighten it. You can also answer "
+            "with only that line, just the sticker.")
+
+
+def bot_send_reply(m, session, answer):
+    """Manda la respuesta y, si la IA eligio uno, un sticker."""
+    sticker = session.pop("sticker", None)
+    if answer:
+        bot_send(m, answer)
+    if sticker:
+        try:
+            with open(os.path.join(STICKER_DIR, sticker), "rb") as f:
+                whatsapp.send_sticker(m["chat"], f.read(), None if answer else m.get("event"))
+            bot_log(f"   → 🎭 sticker: {sticker_list().get(sticker, sticker)}")
+        except Exception as e:
+            print("Mandar sticker:", e)
+
+
 def bot_reply(session, text, picture=None, context="", may_skip=False):
     """Lo que contesta el bot. Solo conversa: nunca ejecuta acciones en tu PC."""
     owner = OWNER_NAME or "my owner"
@@ -2531,8 +2608,8 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
              "of the panas, not a polite assistant. Talk exactly like them: short, lowercase, rough and vulgar, "
              "with a grosería in almost every message (mrc, marico, coño, verga, mmgv, mamagüevo, bcrro, "
              "nojoda, mierda, pajuo, becerro, hijo e puta as a joke), sarcastic and with heavy chalequeo. "
-             "No soft or cute talk at all: never say 'tranquilo', 'de pana', 'jefe', 'mi pana', 'qué risa', "
-             "'qué pasó?', 'me dejaste loco', no 🤙 or ❤️, no hugs or good vibes. Do not praise people, do not be sweet or diplomatic, do not try to keep everyone happy: "
+             "No soft or cute talk at all: never say 'de pana', 'jefe', 'mi pana', 'qué risa', "
+             "'qué pasó?', 'me dejaste loco', no 🤙 or ❤️, no hugs or good vibes. 'TRANQUILOO' in this group is sarcasm meaning 'sí claro, cualquiera cae': use it only that way, never to calm someone down. Do not praise people, do not be sweet or diplomatic, do not try to keep everyone happy: "
              "if someone talks nonsense, say it; if they mess with you, roast them back harder. Dark and crude "
              "humor is fine. Write like the examples in your notes (how Edgardo, Cesar or Luis write), not like "
              "Sayago: usually ONE short line, two at most, lowercase, no '¿' or '¡', abbreviations like q, pq, "
@@ -2584,6 +2661,7 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
               "agent: no 'claro que sí', no 'con gusto', no summaries, no explaining the joke. A person may send "
               "one idea split into several short messages: they arrive joined with line breaks, answer them "
               "as one thing, once."
+              + sticker_prompt(casual)
               + (" This is a GROUP: only say something when it is really needed (they talk to you, ask you "
                  "something, mention you or it is clearly your turn). If the last message is just chatter, "
                  "laughs, a reaction or talk between the others, reply with exactly SKIP and nothing else."
@@ -2626,6 +2704,16 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
                       else f"jajaja tú quisieras. pregúntame otra cosa 😂")
     if may_skip and re.fullmatch(r"\W*skip\W*", answer.strip(), flags=re.I):
         return ""
+    hit = re.search(r"^\W*STICKER\s*:?\s*#?(\d+)\W*$", answer, flags=re.M | re.I)
+    if hit:
+        stickers = list(sticker_list())[-30:]
+        number = int(hit.group(1)) - 1
+        if 0 <= number < len(stickers):
+            session["sticker"] = stickers[number]
+        answer = (answer[:hit.start()] + answer[hit.end():]).strip()
+        if not answer and session.get("sticker"):
+            session["history"].append({"role": "assistant", "content": "(sent a sticker)"})
+            return ""
     answer = re.sub(r"^\W*skip\W*$", "", answer, flags=re.M | re.I).strip() or answer
     answer = take_note(session, text, answer, relative)
     answer = take_fact(session, text, answer)
@@ -2707,7 +2795,7 @@ def bot_worker():
                     print("Contexto del chat:", e)
                     context = ""
                 answer = bot_reply(session, order, context=context)
-                bot_send(dict(m, who=session["who"], contact=session.get("contact", "")), answer)
+                bot_send_reply(dict(m, who=session["who"], contact=session.get("contact", "")), session, answer)
                 bot_log(f"   → {answer}   ({time.time() - started:.1f} s)")
                 continue
             if kind == "start":
@@ -2793,10 +2881,10 @@ def bot_worker():
                 bot_log("   · (no hacía falta responder)")
                 continue
             answer = bot_reply(session, text, picture, context, may_skip=may_skip)
-            if not answer:
+            if not answer and not session.get("sticker"):
                 bot_log("   · (no hacía falta responder)")
                 continue
-            bot_send(m, answer)
+            bot_send_reply(m, session, answer)
             bot_log(f"   → {answer}   ({time.time() - started:.1f} s)")
         except Exception as e:
             bot_log(f"Error: {e}")
@@ -3047,6 +3135,8 @@ if __name__ == "__main__":
                 telefono.signals.put(f"WAD {m['who']}|{m['text'].replace(chr(10), ' ')}")
         bot_window_reset()
         threading.Thread(target=bot_learner, daemon=True, name="aprender").start()
+        whatsapp.STICKERS["folder"] = STICKER_DIR
+        threading.Thread(target=sticker_describer, daemon=True, name="stickers").start()
         threading.Thread(target=bot_worker, daemon=True, name="bot").start()
         whatsapp.owner["name"] = OWNER_NAME or "me"
         whatsapp.start(HERE, wa_message)
