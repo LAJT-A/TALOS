@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/talos.png" width="120" alt="TALOS">
+
 # TALOS
 
 **Asistente de voz para Windows que entiende lo que le pides y lo hace.**
@@ -153,6 +155,7 @@ TALOS/
 └── scripts/
     ├── instalar.bat             # instalación completa
     ├── talos.bat                # abre TALOS
+    ├── crear_icono_talos.bat    # acceso directo "TALOS" con su logo en el escritorio y el menú Inicio
     └── iconos.ps1               # saca los logos de tus apps para el menú de TMC
 ```
 

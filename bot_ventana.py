@@ -1,4 +1,5 @@
-"""Ventana del bot de WhatsApp de TALOS: una pestaña por chat, con botones para pararlos.
+"""Ventana del bot de WhatsApp de TALOS: los chats a la izquierda (como WhatsApp) y la conversacion
+a la derecha, con botones para parar cada chat o todos.
 
 La abre jarvis.py solo. Lee lo que pasa de bot_eventos.jsonl y le manda las ordenes a jarvis.py
 escribiendo en bot_comandos.txt ("stop <chat>" o "stop_all").
@@ -7,16 +8,28 @@ import json
 import os
 import sys
 import tkinter as tk
-from tkinter import ttk
+from tkinter import font as tkfont
 
 HERE = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
 EVENTS = os.path.join(HERE, "bot_eventos.jsonl")
 COMMANDS = os.path.join(HERE, "bot_comandos.txt")
+ICON = os.path.join(HERE, "talos.ico")
 
-BG, PANEL, CARD = "#0f1115", "#171a21", "#1f232c"
-TEXT, MUTED, ACCENT, RED = "#e8eaed", "#8b93a1", "#25d366", "#ef5350"
-IN_BUBBLE, OUT_BUBBLE = "#262b35", "#0b5d43"
-FONT = ("Segoe UI", 10)
+BG = "#0b0e13"          # fondo del chat
+SIDE = "#11151c"        # barra de chats
+SIDE_HOVER = "#171c25"
+SIDE_SEL = "#1c2330"
+HEAD = "#141922"
+LINE = "#1f2632"
+TEXT = "#e9edf1"
+MUTED = "#8a94a3"
+FAINT = "#5c6573"
+ACCENT = "#25d366"
+RED = "#f0524f"
+IN_BUBBLE = "#1d232d"
+OUT_BUBBLE = "#0f5a43"
+NOTE = "#3a3220"
+AVATARS = ["#2f80ed", "#9b51e0", "#f2994a", "#eb5757", "#27ae60", "#56ccf2", "#bb6bd9", "#f2c94c"]
 
 
 def send(command):
@@ -24,137 +37,255 @@ def send(command):
         f.write(command + "\n")
 
 
-class ChatTab:
-    def __init__(self, app, key, who):
-        self.app, self.key, self.who, self.active = app, key, who, True
-        self.frame = tk.Frame(app.tabs, bg=BG)
-        head = tk.Frame(self.frame, bg=PANEL, padx=14, pady=10)
-        head.pack(fill="x")
-        self.dot = tk.Label(head, text="●", fg=ACCENT, bg=PANEL, font=("Segoe UI", 12))
-        self.dot.pack(side="left")
-        tk.Label(head, text=who.replace(" in ", "  ·  "), fg=TEXT, bg=PANEL, font=("Segoe UI Semibold", 12)).pack(side="left", padx=8)
-        self.status = tk.Label(head, text="activo", fg=MUTED, bg=PANEL, font=FONT)
-        self.status.pack(side="left")
-        if key != "*":
-            self.close = tk.Button(head, text="✕ Cerrar", command=self.remove, bg=CARD, fg=MUTED, bd=0,
-                                   activebackground=CARD, activeforeground=TEXT, padx=10, pady=4, font=FONT,
-                                   cursor="hand2")
-            self.close.pack(side="right", padx=(8, 0))
-            self.stop = tk.Button(head, text="■ Parar", command=self.ask_stop, bg=RED, fg="white", bd=0,
-                                  activebackground="#c62828", activeforeground="white", padx=12, pady=4,
-                                  font=("Segoe UI Semibold", 10), cursor="hand2")
-            self.stop.pack(side="right")
-        body = tk.Frame(self.frame, bg=BG)
-        body.pack(fill="both", expand=True)
-        self.text = tk.Text(body, bg=BG, fg=TEXT, bd=0, wrap="word", font=FONT, padx=14, pady=10,
-                            state="disabled", cursor="arrow", highlightthickness=0)
-        bar = ttk.Scrollbar(body, command=self.text.yview)
-        self.text.configure(yscrollcommand=bar.set)
-        bar.pack(side="right", fill="y")
-        self.text.pack(side="left", fill="both", expand=True)
-        t = self.text
-        t.tag_configure("in", background=IN_BUBBLE, lmargin1=10, lmargin2=10, rmargin=220, spacing1=10,
-                        spacing3=2)
-        t.tag_configure("out", background=OUT_BUBBLE, lmargin1=220, lmargin2=220, rmargin=10, spacing1=10,
-                        spacing3=2)
-        t.tag_configure("who", foreground=ACCENT, font=("Segoe UI Semibold", 9))
-        t.tag_configure("meta", foreground=MUTED, font=("Segoe UI", 8))
-        t.tag_configure("info", foreground=MUTED, font=("Segoe UI", 9, "italic"), justify="center",
-                        spacing1=6, spacing3=6)
-        t.tag_configure("note", foreground="#ffd54f", font=("Segoe UI", 9), justify="center", spacing1=6,
-                        spacing3=6)
-        app.tabs.add(self.frame, text=self.label())
+def split_who(who):
+    """"Diego in sayago x" -> ("Diego", "sayago x")."""
+    person, _, group = (who or "").partition(" in ")
+    if person.startswith("chat "):
+        person = "Tú (órdenes)"
+    return person.strip() or "Chat", group.strip()
 
-    def label(self):
-        name = self.who.replace(" in ", " · ")
-        short = name if len(name) <= 28 else name[:26] + "…"
-        return ("● " if self.active and self.key != "*" else "") + short
+
+def initials(name):
+    parts = [p for p in name.replace("(", " ").split() if p[:1].isalnum()]
+    return (parts[0][0] + (parts[1][0] if len(parts) > 1 else "")).upper() if parts else "?"
+
+
+class Chat:
+    """Un chat: su fila en la izquierda y sus mensajes."""
+
+    def __init__(self, app, key, who):
+        self.app, self.key, self.who = app, key, who
+        self.person, self.group = split_who(who) if key != "*" else ("Todos los chats", "")
+        self.active = key != "*"
+        self.events = []
+        color = AVATARS[sum(map(ord, self.person)) % len(AVATARS)] if key != "*" else ACCENT
+
+        self.row = tk.Frame(app.list, bg=SIDE, cursor="hand2", padx=12, pady=9)
+        self.row.pack(fill="x")
+        self.avatar = tk.Canvas(self.row, width=40, height=40, bg=SIDE, highlightthickness=0)
+        self.avatar.create_oval(1, 1, 39, 39, fill=color, outline="")
+        self.avatar.create_text(20, 20, text="✦" if key == "*" else initials(self.person), fill="white",
+                                font=app.f_avatar)
+        self.dot = self.avatar.create_oval(29, 29, 39, 39, fill=ACCENT if self.active else SIDE, outline=SIDE,
+                                           width=2)
+        self.avatar.pack(side="left")
+        self.info = tk.Frame(self.row, bg=SIDE)
+        self.info.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self.title = tk.Label(self.info, text=self.person, bg=SIDE, fg=TEXT, font=app.f_bold, anchor="w")
+        self.title.pack(fill="x")
+        self.sub = tk.Label(self.info, text=self.group or ("todo lo que pasa" if key == "*" else "chat privado"),
+                            bg=SIDE, fg=MUTED, font=app.f_small, anchor="w")
+        self.sub.pack(fill="x")
+        for w in (self.row, self.avatar, self.info, self.title, self.sub):
+            w.bind("<Button-1>", lambda e: app.show(self))
+            w.bind("<Enter>", lambda e: self.paint(hover=True))
+            w.bind("<Leave>", lambda e: self.paint())
+
+    def paint(self, hover=False):
+        color = SIDE_SEL if self.app.current is self else (SIDE_HOVER if hover else SIDE)
+        for w in (self.row, self.title, self.sub, self.avatar, self.info):
+            w.configure(bg=color)
+        self.avatar.itemconfigure(self.dot, fill=ACCENT if self.active else color, outline=color)
 
     def add(self, ev):
-        kind, line, when = ev.get("kind"), ev.get("text", ""), ev.get("time", "")
-        t = self.text
-        t.configure(state="normal")
-        if kind == "in":
-            name = ev.get("name") or ""
-            if self.key == "*" and ev.get("who"):
-                name = ev["who"]
-            if name:
-                t.insert("end", f"  {name}\n", ("in", "who"))
-            t.insert("end", f"  {line}  \n", "in")
-            t.insert("end", f"  {when}\n", ("in", "meta"))
-        elif kind == "out":
-            if self.key == "*" and ev.get("who"):
-                t.insert("end", f"  Talos → {ev['who']}\n", ("out", "who"))
-            t.insert("end", f"  {line}  \n", "out")
-            t.insert("end", f"  {when}" + (f" · {ev['secs']}" if ev.get("secs") else "") + "\n", ("out", "meta"))
-        elif kind == "note":
-            t.insert("end", f"{line}\n", "note")
-        else:
-            t.insert("end", f"{when}  {line}\n", "info")
-        t.configure(state="disabled")
-        t.see("end")
+        self.events.append(ev)
+        kind = ev.get("kind")
+        if kind in ("in", "out"):
+            who = "Talos: " if kind == "out" else (f"{split_who(ev.get('who'))[0]}: " if self.key == "*" else "")
+            preview = (who + ev.get("text", "")).replace("\n", " ")
+            self.sub.configure(text=preview[:40] + ("…" if len(preview) > 40 else ""))
+        if self.app.current is self:
+            self.app.draw(ev, self)
 
     def set_active(self, active):
         self.active = active
-        self.dot.configure(fg=ACCENT if active else MUTED)
-        self.status.configure(text="activo" if active else "detenido")
-        if self.key != "*":
-            self.stop.configure(state="normal" if active else "disabled",
-                                bg=RED if active else CARD)
-        self.app.tabs.tab(self.frame, text=self.label())
-
-    def ask_stop(self):
-        send(f"stop {self.key}")
-        self.status.configure(text="parando…")
-
-    def remove(self):
-        if self.active:
-            self.ask_stop()
-        self.app.tabs.forget(self.frame)
-        self.app.chats.pop(self.key, None)
+        self.paint()
+        if self.app.current is self:
+            self.app.header(self)
 
 
 class App:
     def __init__(self):
+        try:  # en Windows: que la barra de tareas muestre el logo de TALOS y no el de Python
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LAJT.Talos.Bot")
+        except Exception:
+            pass
         self.root = tk.Tk()
         self.root.title("TALOS · Bot de WhatsApp")
-        self.root.geometry("820x620")
+        self.root.geometry("1040x680")
+        self.root.minsize(760, 480)
         self.root.configure(bg=BG)
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(8, 6, 8, 0))
-        style.configure("TNotebook.Tab", background=CARD, foreground=MUTED, padding=(14, 6), borderwidth=0,
-                        font=FONT)
-        style.map("TNotebook.Tab", background=[("selected", PANEL)], foreground=[("selected", TEXT)])
-        style.configure("Vertical.TScrollbar", background=CARD, troughcolor=BG, borderwidth=0, arrowsize=0)
+        try:
+            self.root.iconbitmap(ICON)
+        except Exception:
+            pass
+        base = "Segoe UI" if "Segoe UI" in tkfont.families() else "DejaVu Sans"
+        self.f_text = tkfont.Font(family=base, size=10)
+        self.f_bold = tkfont.Font(family=base, size=10, weight="bold")
+        self.f_small = tkfont.Font(family=base, size=8)
+        self.f_title = tkfont.Font(family=base, size=12, weight="bold")
+        self.f_brand = tkfont.Font(family=base, size=15, weight="bold")
+        self.f_avatar = tkfont.Font(family=base, size=11, weight="bold")
 
-        top = tk.Frame(self.root, bg=BG, padx=14, pady=10)
-        top.pack(fill="x")
-        tk.Label(top, text="TALOS", fg=ACCENT, bg=BG, font=("Segoe UI Black", 14)).pack(side="left")
-        tk.Label(top, text="  bot de WhatsApp", fg=MUTED, bg=BG, font=("Segoe UI", 11)).pack(side="left")
-        tk.Button(top, text="■ Parar todo", command=lambda: send("stop_all"), bg=RED, fg="white", bd=0,
-                  activebackground="#c62828", activeforeground="white", padx=14, pady=5,
-                  font=("Segoe UI Semibold", 10), cursor="hand2").pack(side="right")
-        self.count = tk.Label(top, text="0 activos", fg=MUTED, bg=BG, font=FONT)
-        self.count.pack(side="right", padx=12)
+        # --- izquierda: marca + lista de chats ---
+        side = tk.Frame(self.root, bg=SIDE, width=290)
+        side.pack(side="left", fill="y")
+        side.pack_propagate(False)
+        brand = tk.Frame(side, bg=SIDE, padx=16, pady=14)
+        brand.pack(fill="x")
+        self.logo = None
+        try:
+            from PIL import Image, ImageTk
+            self.logo = ImageTk.PhotoImage(Image.open(ICON).convert("RGBA").resize((30, 30)))
+            tk.Label(brand, image=self.logo, bg=SIDE).pack(side="left", padx=(0, 10))
+        except Exception:
+            pass
+        tk.Label(brand, text="TALOS", bg=SIDE, fg=TEXT, font=self.f_brand).pack(side="left")
+        self.count = tk.Label(brand, text="", bg=SIDE, fg=MUTED, font=self.f_small)
+        self.count.pack(side="right")
+        tk.Frame(side, bg=LINE, height=1).pack(fill="x")
+        stop_all = tk.Label(side, text="■  Parar todos", bg=RED, fg="white", font=self.f_bold, pady=10,
+                            cursor="hand2")
+        stop_all.pack(fill="x", side="bottom", padx=14, pady=14)
+        stop_all.bind("<Button-1>", lambda e: send("stop_all"))
+        self.list = tk.Frame(side, bg=SIDE)
+        self.list.pack(fill="both", expand=True)
 
-        self.tabs = ttk.Notebook(self.root)
-        self.tabs.pack(fill="both", expand=True)
+        # --- derecha: cabecera + mensajes ---
+        main = tk.Frame(self.root, bg=BG)
+        main.pack(side="left", fill="both", expand=True)
+        self.head = tk.Frame(main, bg=HEAD, height=62, padx=18)
+        self.head.pack(fill="x")
+        self.head.pack_propagate(False)
+        self.h_name = tk.Label(self.head, text="", bg=HEAD, fg=TEXT, font=self.f_title)
+        self.h_name.pack(side="left")
+        self.h_status = tk.Label(self.head, text="", bg=HEAD, fg=MUTED, font=self.f_small)
+        self.h_status.pack(side="left", padx=12, pady=(4, 0))
+        self.h_close = tk.Label(self.head, text="✕  Quitar", bg=HEAD, fg=MUTED, font=self.f_text, cursor="hand2",
+                                padx=10)
+        self.h_stop = tk.Label(self.head, text="■  Parar", bg=RED, fg="white", font=self.f_bold, cursor="hand2",
+                               padx=14, pady=6)
+        self.h_stop.bind("<Button-1>", lambda e: self.stop_current())
+        self.h_close.bind("<Button-1>", lambda e: self.remove_current())
+        tk.Frame(main, bg=LINE, height=1).pack(fill="x")
+
+        box = tk.Frame(main, bg=BG)
+        box.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(box, bg=BG, highlightthickness=0)
+        bar = tk.Scrollbar(box, command=self.canvas.yview, width=10, bg=BG, troughcolor=BG, bd=0,
+                           activebackground=LINE)
+        self.canvas.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = tk.Frame(self.canvas, bg=BG)
+        self.win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", self.resize)
+        self.root.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
+        self.root.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-3, "units"))
+        self.root.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(3, "units"))
+
         self.chats = {}
-        self.all = ChatTab(self, "*", "Todos")
+        self.current = None
+        self.width = 700
+        self.all = Chat(self, "*", "")
+        self.show(self.all)
         self.offset = 0
         self.root.after(200, self.poll)
 
+    # ---------- dibujo ----------
+    def resize(self, e):
+        self.width = e.width
+        self.canvas.itemconfigure(self.win, width=e.width)
+
+    def header(self, chat):
+        self.h_name.configure(text=chat.person + (f"  ·  {chat.group}" if chat.group else ""))
+        self.h_stop.pack_forget()
+        self.h_close.pack_forget()
+        if chat.key == "*":
+            self.h_status.configure(text="")
+            return
+        self.h_status.configure(text="● activo" if chat.active else "detenido", fg=ACCENT if chat.active else FAINT)
+        self.h_close.pack(side="right")
+        self.h_stop.pack(side="right", padx=8)
+        self.h_stop.configure(bg=RED if chat.active else LINE, fg="white" if chat.active else FAINT)
+
+    def show(self, chat):
+        old, self.current = self.current, chat
+        if old:
+            old.paint()
+        chat.paint()
+        self.header(chat)
+        for w in self.inner.winfo_children():
+            w.destroy()
+        tk.Frame(self.inner, bg=BG, height=10).pack()
+        for ev in chat.events[-300:]:
+            self.draw(ev, chat, scroll=False)
+        self.root.after(30, lambda: self.canvas.yview_moveto(1.0))
+
+    def draw(self, ev, chat, scroll=True):
+        kind, text, when = ev.get("kind"), ev.get("text", ""), ev.get("time", "")
+        wrap = max(260, int(self.width * 0.6))
+        row = tk.Frame(self.inner, bg=BG)
+        row.pack(fill="x", padx=18, pady=3)
+        if kind in ("in", "out"):
+            out = kind == "out"
+            bg = OUT_BUBBLE if out else IN_BUBBLE
+            bubble = tk.Frame(row, bg=bg, padx=12, pady=7)
+            bubble.pack(side="right" if out else "left")
+            if not out or chat.key == "*":
+                name = ("Talos → " + split_who(ev.get("who"))[0]) if out else split_who(ev.get("who"))[0]
+                tk.Label(bubble, text=name, bg=bg, fg="#7ee2a8" if out else ACCENT, font=self.f_bold,
+                         anchor="w").pack(fill="x")
+            tk.Label(bubble, text=text, bg=bg, fg=TEXT, font=self.f_text, wraplength=wrap, justify="left",
+                     anchor="w").pack(fill="x")
+            meta = when + (f"  ·  {ev['secs']}" if ev.get("secs") else "")
+            tk.Label(bubble, text=meta, bg=bg, fg="#9fc9b5" if out else FAINT, font=self.f_small,
+                     anchor="e").pack(fill="x")
+        elif kind == "note":
+            tk.Label(row, text=text, bg=NOTE, fg="#ffd56b", font=self.f_text, padx=12, pady=5,
+                     wraplength=wrap).pack()
+        else:
+            icon = {"start": "▶  ", "stop": "■  "}.get(kind, "")
+            tk.Label(row, text=f"{icon}{text}   {when}", bg=BG, fg=FAINT, font=self.f_small,
+                     wraplength=wrap).pack()
+        if scroll:
+            self.root.after(30, lambda: self.canvas.yview_moveto(1.0))
+
+    # ---------- botones ----------
+    def stop_current(self):
+        chat = self.current
+        if chat and chat.key != "*" and chat.active:
+            send(f"stop {chat.key}")
+            self.h_status.configure(text="parando…", fg=MUTED)
+
+    def remove_current(self):
+        chat = self.current
+        if not chat or chat.key == "*":
+            return
+        if chat.active:
+            send(f"stop {chat.key}")
+        chat.row.destroy()
+        self.chats.pop(chat.key, None)
+        self.show(self.all)
+        self.counter()
+
+    # ---------- eventos de TALOS ----------
     def chat(self, key, who):
         if key not in self.chats:
-            self.chats[key] = ChatTab(self, key, who or key)
+            self.chats[key] = Chat(self, key, who or key)
         return self.chats[key]
+
+    def counter(self):
+        active = sum(1 for c in self.chats.values() if c.active)
+        self.count.configure(text=f"{active} activo" + ("" if active == 1 else "s"))
 
     def handle(self, ev):
         key, kind = ev.get("key"), ev.get("kind")
-        if kind == "reset":  # TALOS arranco de nuevo
-            for tab in list(self.chats.values()):
-                tab.set_active(False)
+        if kind == "reset":
+            for c in self.chats.values():
+                c.set_active(False)
         elif kind == "stop":
             for k in ev.get("keys", []):
                 if k in self.chats:
@@ -162,18 +293,17 @@ class App:
                     self.chats[k].add(ev)
             self.all.add(ev)
         elif key:
-            tab = self.chat(key, ev.get("who"))
-            if kind == "start":
-                if not tab.active:
-                    tab.set_active(True)
-                self.tabs.select(tab.frame)
-            tab.add(ev)
+            chat = self.chat(key, ev.get("who"))
+            if kind == "start" and not chat.active:
+                chat.set_active(True)
+            chat.row.pack_forget()
+            chat.row.pack(fill="x", after=self.all.row)  # el mas reciente arriba
+            chat.add(ev)
             if kind in ("in", "out", "note", "start"):
                 self.all.add(ev)
         else:
             self.all.add(ev)
-        active = sum(1 for t in self.chats.values() if t.active)
-        self.count.configure(text=f"{active} activo" + ("" if active == 1 else "s"))
+        self.counter()
 
     def poll(self):
         try:
@@ -189,8 +319,8 @@ class App:
                 for line in data[:end].decode("utf-8", "replace").splitlines():
                     try:
                         self.handle(json.loads(line))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print("evento:", e)
         except OSError:
             pass
         self.root.after(300, self.poll)
