@@ -2119,12 +2119,48 @@ def bot_incoming(m):
     if m["from_me"] or key not in bot_chats:
         return False
     if m.get("is_audio"):
+        bot_flush(key)
         bot_queue.put(("audio", key, m, ""))
         return True
     if not raw and not m.get("media"):
         return True  # documentos, ubicaciones...: el bot no los comenta
-    bot_queue.put(("msg", key, m, raw))
+    if m.get("media"):
+        bot_flush(key)
+        bot_queue.put(("msg", key, m, raw))
+        return True
+    bot_hold(key, m, raw)
     return True
+
+
+BOT_WAIT = 5            # segundos que espera por si la persona sigue escribiendo en varios mensajes
+bot_held = {}           # chat -> {"m": ultimo mensaje, "texts": [...], "timer"}
+bot_held_lock = threading.Lock()
+
+
+def bot_hold(key, m, raw):
+    """Junta los mensajes seguidos de la misma persona y los responde como uno solo."""
+    with bot_held_lock:
+        held = bot_held.get(key)
+        if held:
+            held["timer"].cancel()
+            held["texts"].append(raw)
+            held["m"] = m
+        else:
+            held = bot_held[key] = {"m": m, "texts": [raw], "first": m}
+        held["timer"] = threading.Timer(BOT_WAIT, bot_flush, args=(key,))
+        held["timer"].daemon = True
+        held["timer"].start()
+
+
+def bot_flush(key):
+    with bot_held_lock:
+        held = bot_held.pop(key, None)
+    if held:
+        held["timer"].cancel()
+        m = held["m"]
+        if len(held["texts"]) > 1 and held["first"].get("quoted_kind") and not m.get("quoted_kind"):
+            m = held["first"]  # si el primero era una respuesta a algo, se contesta a ese
+        bot_queue.put(("msg", key, m, "\n".join(held["texts"])))
 
 
 note_recognizer = sr.Recognizer()
@@ -2244,6 +2280,12 @@ def bot_memory(chat_key, title=""):
                 text = fh.read()[:4500]
         except OSError:
             continue
+        try:
+            with open(path[:-4] + ".auto.txt", encoding="utf-8") as fh:
+                learned = fh.read()[-2000:]
+            text += "\n\nLO QUE HAS IDO APRENDIENDO DEL CHAT (lo mas nuevo al final):\n" + learned
+        except OSError:
+            pass
         if path != by_jid and not os.path.exists(by_jid):
             try:  # copia con el JID: si le cambian el nombre al grupo, las notas siguen
                 with open(by_jid, "w", encoding="utf-8") as fh:
@@ -2360,6 +2402,66 @@ def memory_path(chat_key, title=""):
     return os.path.join(BOT_MEMORY_DIR, re.sub(r"[^\w.-]", "_", chat_key) + ".txt")
 
 
+LEARN_EVERY = 150     # cada cuantos mensajes nuevos del grupo repasa lo que paso y aprende
+LEARN_STATE = os.path.join(HERE, "bot_memoria", "aprendido.json")
+
+
+def bot_learner():
+    """Cada rato repasa los mensajes nuevos de los chats que tienen notas y guarda lo importante."""
+    time.sleep(120)
+    while True:
+        try:
+            learn_round()
+        except Exception as e:
+            print("Aprender del chat:", e)
+        time.sleep(30 * 60)
+
+
+def learn_round():
+    try:
+        with open(LEARN_STATE, encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception:
+        state = {}
+    for chat_key, (title, _) in list(whatsapp._seen.items()):
+        if not chat_key.endswith("@g.us") and not is_casual({"who": title, "name": title, "contact": title}):
+            continue
+        path = memory_path(chat_key, title)
+        if not os.path.exists(path):
+            continue  # solo los chats que ya tienen notas
+        since = state.get(chat_key) or int(time.time()) - 2 * 86400
+        rows = whatsapp.since(chat_key, since, 600)
+        if len(rows) < LEARN_EVERY:
+            continue
+        while not bot_queue.empty():  # primero lo que esten esperando
+            time.sleep(10)
+        with open(path, encoding="utf-8") as f:
+            notes = f.read()[:4500]
+        try:
+            with open(path[:-4] + ".auto.txt", encoding="utf-8") as f:
+                learned = f.read()
+        except OSError:
+            learned = ""
+        prompt = (f"Estas son tus notas del chat de WhatsApp \"{title}\":\n{notes}\n{learned[-2000:]}\n\n"
+                  f"Y estos son los mensajes nuevos:\n{whatsapp.lines(rows)[-14000:]}\n\n"
+                  "Escribe solo lo NUEVO que vale la pena recordar para hablar en ese chat: apodos nuevos, quien "
+                  "es quien, planes y fechas, cosas que pasaron, chistes internos nuevos, cosas que alguien dijo "
+                  "de si mismo. Maximo 8 lineas cortas que empiecen con \"- \", en español, cada una entendible "
+                  "sola (quien y que). No repitas lo que ya esta en las notas. No anotes chismes sexuales sobre "
+                  "personas, salud, plata, cuentas, claves, direcciones ni telefonos. Si no hay nada nuevo, "
+                  "responde solo NADA.")
+        answer = chat([{"role": "user", "content": prompt}], max_tokens=400).strip()
+        state[chat_key] = rows[-1][0]
+        facts = [l.strip() for l in answer.splitlines() if l.strip().startswith("- ")]
+        if facts:
+            text = (learned + f"\n[{time.strftime('%d/%m')}]\n" + "\n".join(facts[:8])).strip()
+            with open(path[:-4] + ".auto.txt", "w", encoding="utf-8") as f:
+                f.write(text[-3000:])
+            bot_log(f"   🧠 Aprendí {len(facts[:8])} cosas nuevas de {title}")
+        with open(LEARN_STATE, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+
+
 def save_note(who, text):
     with recados_lock:
         try:
@@ -2407,7 +2509,20 @@ def insults_owner(answer, about_owner=False):
     return False
 
 
-def bot_reply(session, text, picture=None, context=""):
+FILLER = (r"((?=\w*j)[jaseihk]{2,}|a?j+[aej]*|j[sj]+\w*|x+d+|lo+l|lmao|dio+s+|bo+f+|wtf|alv|ok+|okis|ok+ey|va+|sisa|si+|no+|"
+          r"vrg|verga|mrc|marico|nojoda|coño|ufff*|uy+|ay+|ah+|eh+|q|que+|kk+|h[aj]+|tremendo|epa+|ño+)")
+
+
+def is_filler(text):
+    """True si todo es relleno (risas, emojis, "dios", "bof"...): en un grupo no hace falta responder eso."""
+    for line in text.splitlines():
+        plain = re.sub(r"[^\w\s]", " ", comandos._strip(line.lower())).strip()
+        if plain and not all(re.fullmatch(FILLER, word) for word in plain.split()):
+            return False
+    return True
+
+
+def bot_reply(session, text, picture=None, context="", may_skip=False):
     """Lo que contesta el bot. Solo conversa: nunca ejecuta acciones en tu PC."""
     owner = OWNER_NAME or "my owner"
     relative = family_of(session)
@@ -2457,7 +2572,15 @@ def bot_reply(session, text, picture=None, context=""):
               + f" If {owner} (your boss) tells you to note down, write down, save or remember something, do it: "
               "add at the very end one separate line that starts with 'NOTA:' followed by that fact written so it "
               "makes sense on its own (who and what, using what was said in the chat), and just confirm briefly."
-              + " Always answer the LAST message specifically. Never repeat a reply you already sent.")
+              + " Always answer the LAST message specifically. Never repeat a reply you already sent."
+              + " Sound like a real person texting, loose and natural, never like a robot or a customer service "
+              "agent: no 'claro que sí', no 'con gusto', no summaries, no explaining the joke. A person may send "
+              "one idea split into several short messages: they arrive joined with line breaks, answer them "
+              "as one thing, once."
+              + (" This is a GROUP: only say something when it is really needed (they talk to you, ask you "
+                 "something, mention you or it is clearly your turn). If the last message is just chatter, "
+                 "laughs, a reaction or talk between the others, reply with exactly SKIP and nothing else."
+                 if may_skip else ""))
     if context:
         system += ("\n\nUse this only as background to understand the chat; do not repeat it unless asked:\n"
                    + context)
@@ -2494,6 +2617,9 @@ def bot_reply(session, text, picture=None, context=""):
         if insults_owner(answer, about_owner):
             answer = (f"Con gusto, yo le aviso a {owner} 😊" if relative or not casual
                       else f"jajaja tú quisieras. pregúntame otra cosa 😂")
+    if may_skip and re.fullmatch(r"\W*skip\W*", answer.strip(), flags=re.I):
+        return ""
+    answer = re.sub(r"^\W*skip\W*$", "", answer, flags=re.M | re.I).strip() or answer
     answer = take_note(session, text, answer, relative)
     answer = take_fact(session, text, answer)
     if session.get("chat_key"):
@@ -2654,7 +2780,15 @@ def bot_worker():
                 context = ""
             if m.get("quoted_id") and "replying to an older message" in context:
                 bot_log("   ↳ viendo la conversación de ese momento")
-            answer = bot_reply(session, text, picture, context)
+            may_skip = bool(session.get("is_group")) and not picture and kind == "msg"
+            if may_skip and is_filler(text):
+                session["history"].append({"role": "user", "content": text})
+                bot_log("   · (no hacía falta responder)")
+                continue
+            answer = bot_reply(session, text, picture, context, may_skip=may_skip)
+            if not answer:
+                bot_log("   · (no hacía falta responder)")
+                continue
             bot_send(m, answer)
             bot_log(f"   → {answer}   ({time.time() - started:.1f} s)")
         except Exception as e:
@@ -2905,6 +3039,7 @@ if __name__ == "__main__":
             if not m["is_group"]:  # los grupos no se anuncian
                 telefono.signals.put(f"WAD {m['who']}|{m['text'].replace(chr(10), ' ')}")
         bot_window_reset()
+        threading.Thread(target=bot_learner, daemon=True, name="aprender").start()
         threading.Thread(target=bot_worker, daemon=True, name="bot").start()
         whatsapp.owner["name"] = OWNER_NAME or "me"
         whatsapp.start(HERE, wa_message)

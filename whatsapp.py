@@ -96,6 +96,12 @@ def search(chat_key, words, limit=10):
     return [rows for _, rows in found[-limit:]]
 
 
+def since(chat_key, ts, limit=600):
+    """Mensajes del chat despues de ese momento (los mas viejos primero)."""
+    return _query("SELECT ts, name, text FROM msgs WHERE chat=? AND ts>? ORDER BY ts LIMIT ?",
+                  (chat_key, int(ts), limit))
+
+
 def all_messages(chat_key, limit=4000):
     return list(reversed(_query("SELECT ts, name, text FROM msgs WHERE chat=? ORDER BY ts DESC LIMIT ?",
                                 (chat_key, limit))))
