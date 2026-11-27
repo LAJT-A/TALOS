@@ -2326,6 +2326,40 @@ def take_note(session, text, answer, relative):
     return answer
 
 
+bot_recent = {}  # chat -> lo ultimo que dijo el bot ahi (para no repetirse entre personas del grupo)
+
+
+def take_fact(session, text, answer):
+    """Saca la linea "NOTA:" (cuando tu le dices "anota eso") y la guarda en las notas de ese chat."""
+    hit = re.search(r"^\W*NOTA\s*:\s*(.+)$", answer, flags=re.M | re.I)
+    if not hit:
+        return answer
+    answer = (answer[:hit.start()] + answer[hit.end():]).strip() or "anotado 👍"
+    if not text.startswith(f"[{OWNER_NAME or 'The owner'} (your boss) says]"):
+        return answer  # solo tu le puedes hacer anotar cosas
+    key = session.get("chat_key", "")
+    path = memory_path(key, whatsapp.title_of(key))
+    try:
+        os.makedirs(BOT_MEMORY_DIR, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n- ({time.strftime('%d/%m')}, lo dijo {OWNER_NAME or 'el dueño'}) {hit.group(1).strip()}")
+        bot_log(f"   📝 Anotado: {hit.group(1).strip()}")
+    except OSError as e:
+        print("Notas:", e)
+    return answer
+
+
+def memory_path(chat_key, title=""):
+    """El archivo de notas de ese chat (el que encuentra bot_memory, o uno nuevo con el JID)."""
+    slug = lambda s: re.sub(r"[^a-z0-9]+", "_", comandos._strip((s or "").lower())).strip("_")
+    if title and os.path.isdir(BOT_MEMORY_DIR):
+        name = slug(title)
+        for f in sorted(os.listdir(BOT_MEMORY_DIR), key=len, reverse=True):
+            if f.endswith(".txt") and slug(f[:-4]) and slug(f[:-4]) in name:
+                return os.path.join(BOT_MEMORY_DIR, f)
+    return os.path.join(BOT_MEMORY_DIR, re.sub(r"[^\w.-]", "_", chat_key) + ".txt")
+
+
 def save_note(who, text):
     with recados_lock:
         try:
@@ -2378,11 +2412,13 @@ def bot_reply(session, text, picture=None, context=""):
     owner = OWNER_NAME or "my owner"
     relative = family_of(session)
     casual = BOT_SWEARING and not relative and is_casual(session)
-    style = ("This is a private WhatsApp chat between close adult friends from Venezuela. Talk like one of them: "
-             "relaxed, with their slang, and a swear word now and then when it fits (marico, coño, verga...), but "
-             "do not insult people or roast them unless they start it, and never fill every sentence with "
-             "groserías. Play along with jokes and dish it back when they mess with you. Never moralize or add "
-             "warnings. "
+    style = ("This is a private WhatsApp chat between close adult friends from Venezuela, and you are one more "
+             "of the panas, not a polite assistant. Talk exactly like them: short, lowercase, their slang (mrc, "
+             "marico, coño, verga, mmgv, bcrro, nojoda, pana) and swear words when they fit, sarcastic, with "
+             "chalequeo. Do not praise people, do not be sweet or diplomatic, do not try to keep everyone happy: "
+             "if someone talks nonsense, say it; if they mess with you, roast them back harder. Dark and crude "
+             "humor is fine. Do not end every message with 'jajaja', '😂' or a question; most messages should "
+             "have no emoji. Never moralize, never add warnings or apologies. "
              if casual else
              "Talk normally: friendly, polite and natural, like a well-mannered assistant. No swear words or "
              "vulgar slang at all, no insults and no crude jokes. ")
@@ -2417,7 +2453,11 @@ def bot_reply(session, text, picture=None, context=""):
               "Chavezito are people (nicknames of friends), not objects."
               + f" If they ask you to tell, remind or pass something to {owner}, tell them you will, and add at "
               f"the very end one separate line that starts with 'RECADO:' followed by what {owner} must know, "
-              "short and clear (that line is not shown to them).")
+              "short and clear (that line is not shown to them)."
+              + f" If {owner} (your boss) tells you to note down, write down, save or remember something, do it: "
+              "add at the very end one separate line that starts with 'NOTA:' followed by that fact written so it "
+              "makes sense on its own (who and what, using what was said in the chat), and just confirm briefly."
+              + " Always answer the LAST message specifically. Never repeat a reply you already sent.")
     if context:
         system += ("\n\nUse this only as background to understand the chat; do not repeat it unless asked:\n"
                    + context)
@@ -2432,6 +2472,13 @@ def bot_reply(session, text, picture=None, context=""):
                        "name. Do not make things up that are not in the picture.")
         messages[0] = {"role": "system", "content": system + system_note}
     answer = chat(messages, max_tokens=200)
+    said = [h["content"].strip().lower() for h in session["history"] if h["role"] == "assistant"][-6:]
+    said += [a.lower() for a in bot_recent.get(session.get("chat_key", ""), [])]
+    if answer.strip().lower() in said:  # la misma respuesta otra vez: se pide distinta
+        messages[0] = dict(messages[0], content=messages[0]["content"] + (
+            f"\n\nIMPORTANT: you already said \"{answer.strip()[:200]}\". Answer their last message with "
+            "something different."))
+        answer = chat(messages, max_tokens=200)
     about_owner = bool(relative) or mentions_owner(text)
     if not casual and has_swearing(answer):
         messages[0] = dict(messages[0], content=messages[0]["content"] + (
@@ -2448,6 +2495,10 @@ def bot_reply(session, text, picture=None, context=""):
             answer = (f"Con gusto, yo le aviso a {owner} 😊" if relative or not casual
                       else f"jajaja tú quisieras. pregúntame otra cosa 😂")
     answer = take_note(session, text, answer, relative)
+    answer = take_fact(session, text, answer)
+    if session.get("chat_key"):
+        recent = bot_recent.setdefault(session["chat_key"], collections.deque(maxlen=8))
+        recent.append(re.sub(r"[*_`#]+", "", answer).strip())
     answer = re.sub(r"^\W*DO:.*$", "", answer, flags=re.M | re.I).strip()  # por si acaso: aqui no hay acciones
     for signature in BOT_SIGNATURES.values():  # la firma la pone bot_send, y solo a quien es
         answer = re.sub(re.escape(signature.lstrip("#")), "", answer, flags=re.I)
@@ -2493,7 +2544,8 @@ def bot_worker():
                 if not session:
                     session = bot_chats[key] = {"chat": m["chat"], "name": m["name"] or "friend",
                                                 "who": m["who"], "history": [], "last": time.time(),
-                                                "contact": m.get("contact", ""), "is_group": m["is_group"]}
+                                                "contact": m.get("contact", ""), "is_group": m["is_group"],
+                                                "chat_key": whatsapp.key_of(m["chat"])}
                     bot_log(f"▶ Empezó con {m['who']} (le respondió al bot).  {bot_active()}")
                 kind = "audio" if m.get("is_audio") else "msg"
                 if kind == "msg" and not text and not m.get("media"):
@@ -2503,7 +2555,8 @@ def bot_worker():
                 sessions = [v for k, v in bot_chats.items() if k.split("|")[0] == chat_key]
                 if not sessions:
                     session = bot_chats[key] = {"chat": m["chat"], "name": "everyone" if m["is_group"] else "friend",
-                                                "who": f"chat {m['who']}", "history": [], "last": time.time()}
+                                                "who": f"chat {m['who']}", "history": [], "last": time.time(),
+                                                "is_group": m["is_group"], "chat_key": chat_key}
                     bot_log(f"▶ Empezó por orden tuya en {m['who']}.  {bot_active()}")
                     sessions = [session]
                 order = f"[{OWNER_NAME or 'The owner'} (your boss) says]: {text}"
@@ -2529,7 +2582,8 @@ def bot_worker():
                     who = m["who"] if not m["from_me"] else "this chat"
                     session = bot_chats[key] = {"chat": m["chat"], "name": m["name"] or "friend",
                                                 "who": who, "history": [], "last": time.time(),
-                                                "contact": m.get("contact", ""), "is_group": m["is_group"]}
+                                                "contact": m.get("contact", ""), "is_group": m["is_group"],
+                                                "chat_key": whatsapp.key_of(m["chat"])}
                     bot_log(f"▶ Empezó con {who}.  {bot_active()}")
                 if not text:
                     reply = f"Yes, {m['name']}?" if not m["from_me"] else "Yes?"
