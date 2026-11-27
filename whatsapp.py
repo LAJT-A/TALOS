@@ -113,6 +113,9 @@ def ready():
     return _client is not None and state["status"] == "connected"
 
 
+_started = [time.time()]
+
+
 def start(folder, on_message, on_status=print):
     """Conecta en segundo plano. on_message(dict) por cada mensaje que llega (ver _incoming)."""
     try:
@@ -294,6 +297,8 @@ def _incoming(cl, ev, on_message):
         who = name if not src.IsFromMe else (_name_of_contact(cl, src.Chat) or src.Chat.User)
         if not src.IsFromMe:
             _seen[_jid_text(src.Chat)] = (who, src.Chat)
+    if (_seconds(ev.Info.Timestamp) or time.time()) < _started[0] - 20:
+        return  # llego mientras TALOS estaba cerrado: queda guardado (lo puede leer), pero no se responde
     on_message({"who": who, "name": (ev.Info.Pushname or name).split()[0] if (ev.Info.Pushname or name) else "",
                 "text": text, "raw": raw, "is_group": src.IsGroup, "chat": src.Chat,
                 "sender": src.Sender, "from_me": src.IsFromMe,

@@ -16,6 +16,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 import wave
@@ -1985,25 +1986,99 @@ BOT_LOG = os.path.join(HERE, "bot_chats.log")
 bot_window = {"proc": None}
 
 
-def bot_log(line):
-    """Muestra el bot en la consola y en su ventana aparte, sin hablar ni interrumpirte."""
+BOT_EVENTS = os.path.join(HERE, "bot_eventos.jsonl")      # lo que muestra la ventana del bot
+BOT_COMMANDS = os.path.join(HERE, "bot_comandos.txt")     # lo que la ventana le pide (parar chats)
+bot_thread = threading.local()                            # el chat que el bot esta atendiendo ahorita
+bot_events_lock = threading.Lock()
+
+
+def bot_log(line, keys=None):
+    """Muestra el bot en la consola y en su ventana (una pestaña por chat), sin hablar ni interrumpirte."""
     stamp = time.strftime("%H:%M")
     print(f"[Bot {stamp}] {line}")
     try:
         with open(BOT_LOG, "a", encoding="utf-8") as f:
             f.write(f"{stamp}  {line}\n")
     except OSError:
-        return
+        pass
+    key = getattr(bot_thread, "key", None)
+    session = bot_chats.get(key) or {}
+    who = session.get("who") or getattr(bot_thread, "who", "") or ""
+    ev = {"time": stamp, "key": key, "who": who, "name": who.split(" in ")[0]}
+    body = line.strip()
+    if line.startswith("▶"):
+        ev.update(kind="start", text=re.sub(r"\s+Chats activos:.*$", "", body.lstrip("▶ ")))
+    elif line.startswith("■"):
+        ev.update(kind="stop", keys=keys or ([key] if key else []),
+                  text=re.sub(r"\s+Chats activos:.*$", "", body.lstrip("■ ")))
+    elif body.startswith("→"):
+        hit = re.search(r"\s+\((\d+(?:\.\d+)?) s\)$", body)
+        ev.update(kind="out", text=body[1:hit.start() if hit else None].strip(),
+                  secs=f"{hit.group(1)} s" if hit else "")
+    elif body[:1] in ("📝", "📱"):
+        ev.update(kind="note", text=body)
+    elif who and body.startswith(who + ":"):
+        ev.update(kind="in", text=body[len(who) + 1:].strip())
+    else:
+        ev.update(kind="info", text=body)
+    bot_event(ev)
+    if ev["kind"] in ("start", "in"):
+        open_bot_window()
+
+
+def bot_event(ev):
+    try:
+        with bot_events_lock, open(BOT_EVENTS, "a", encoding="utf-8") as f:
+            f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def open_bot_window():
+    """Abre la ventana del bot si no esta abierta (si la cierras, vuelve cuando alguien escriba)."""
     proc = bot_window["proc"]
-    if BOT_WINDOW and (proc is None or proc.poll() is not None):
-        script = ("$host.ui.RawUI.WindowTitle = 'Bot de WhatsApp'; "
-                  "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
-                  f"Get-Content -LiteralPath '{BOT_LOG}' -Wait -Tail 40 -Encoding UTF8")
+    if not BOT_WINDOW or (proc is not None and proc.poll() is None):
+        return
+    exe = sys.executable
+    quiet = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    try:
+        bot_window["proc"] = subprocess.Popen([quiet if os.path.exists(quiet) else exe,
+                                               os.path.join(HERE, "bot_ventana.py"), HERE])
+    except Exception as e:
+        print("Ventana del bot:", e)
+
+
+def bot_commands():
+    """Escucha los botones de la ventana del bot (parar un chat o todos)."""
+    while True:
+        time.sleep(0.7)
         try:
-            bot_window["proc"] = subprocess.Popen(["powershell", "-NoProfile", "-Command", script],
-                                                  creationflags=subprocess.CREATE_NEW_CONSOLE)
-        except Exception as e:
-            print("Ventana del bot:", e)
+            with open(BOT_COMMANDS, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            os.remove(BOT_COMMANDS)
+        except OSError:
+            continue
+        for line in lines:
+            cmd, _, key = line.strip().partition(" ")
+            if cmd == "stop_all":
+                bot_stop()
+            elif cmd == "stop" and key:
+                session = bot_chats.pop(key, None)
+                if session:
+                    bot_log(f"■ Paraste el bot con {session['who']}.  {bot_active()}", keys=[key])
+                else:
+                    bot_event({"time": time.strftime("%H:%M"), "kind": "stop", "keys": [key], "text": "detenido"})
+
+
+def bot_window_reset():
+    """Al arrancar: ventana limpia (lo de antes no sigue)."""
+    try:
+        with open(BOT_EVENTS, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"time": time.strftime("%H:%M"), "kind": "reset",
+                                "text": "TALOS arrancó"}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    threading.Thread(target=bot_commands, daemon=True, name="bot-botones").start()
 
 
 def bot_active():
@@ -2403,6 +2478,7 @@ def bot_send(m, text):
 def bot_worker():
     while True:
         kind, key, m, text = bot_queue.get()
+        bot_thread.key, bot_thread.who = key, m.get("who", "")
         try:
             session = bot_chats.get(key)
             if session and time.time() - session["last"] > BOT_MINUTES * 60:
@@ -2654,13 +2730,14 @@ def analyze_chat(name):
 def bot_stop(name=""):
     """Deja de contestar (a todos, o a quien coincida con `name`). Devuelve a quienes."""
     chosen = bot_matches(name) if name.strip() else list(bot_chats)
-    stopped = []
+    stopped, keys = [], []
     for k, session in list(bot_chats.items()):
         if k in chosen:
             bot_chats.pop(k, None)
             stopped.append(session["who"])
+            keys.append(k)
     if stopped:
-        bot_log(f"■ Paraste el bot con {', '.join(stopped)}.  {bot_active()}")
+        bot_log(f"■ Paraste el bot con {', '.join(stopped)}.  {bot_active()}", keys=keys)
     return stopped
 
 
@@ -2773,6 +2850,7 @@ if __name__ == "__main__":
                 return  # lo atiende el bot
             if not m["is_group"]:  # los grupos no se anuncian
                 telefono.signals.put(f"WAD {m['who']}|{m['text'].replace(chr(10), ' ')}")
+        bot_window_reset()
         threading.Thread(target=bot_worker, daemon=True, name="bot").start()
         whatsapp.owner["name"] = OWNER_NAME or "me"
         whatsapp.start(HERE, wa_message)

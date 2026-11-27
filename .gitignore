@@ -27,3 +27,5 @@ bot_chats.log
 whatsapp_mensajes.db*
 bot_memoria/
 recados.json
+bot_eventos.jsonl
+bot_comandos.txt
