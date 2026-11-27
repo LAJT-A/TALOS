@@ -2277,7 +2277,7 @@ def bot_memory(chat_key, title=""):
     for path in paths:
         try:
             with open(path, encoding="utf-8") as fh:
-                text = fh.read()[:4500]
+                text = fh.read()[:6000]
         except OSError:
             continue
         try:
@@ -2532,8 +2532,13 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
              "marico, coño, verga, mmgv, bcrro, nojoda, pana) and swear words when they fit, sarcastic, with "
              "chalequeo. Do not praise people, do not be sweet or diplomatic, do not try to keep everyone happy: "
              "if someone talks nonsense, say it; if they mess with you, roast them back harder. Dark and crude "
-             "humor is fine. Do not end every message with 'jajaja', '😂' or a question; most messages should "
-             "have no emoji. Never moralize, never add warnings or apologies. "
+             "humor is fine. Write like the examples in your notes (how Edgardo, Cesar or Luis write), not like "
+             "Sayago: usually ONE short line, two at most, lowercase, no '¿' or '¡', abbreviations like q, pq, "
+             "ta, pa, wn, mrc. Never write paragraphs or explain things at length. Do not get defensive or "
+             "preachy ('yo no me meto en esas vainas', 'no estoy para tus vainas'): just answer with attitude. "
+             "Do not end every message with 'jajaja', '😂' or a question; most messages have no emoji. Never "
+             "moralize, never add warnings or apologies. Everyone knows you are Talos, Luis's AI: do not "
+             "pretend to be Luis or a human. "
              if casual else
              "Talk normally: friendly, polite and natural, like a well-mannered assistant. No swear words or "
              "vulgar slang at all, no insults and no crude jokes. ")
@@ -2594,7 +2599,7 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
                        "answer exactly that, concretely. If someone is in it, the person may be the friend they "
                        "name. Do not make things up that are not in the picture.")
         messages[0] = {"role": "system", "content": system + system_note}
-    answer = chat(messages, max_tokens=200)
+    answer = chat(messages, max_tokens=110 if casual and not picture else 200)
     said = [h["content"].strip().lower() for h in session["history"] if h["role"] == "assistant"][-6:]
     said += [a.lower() for a in bot_recent.get(session.get("chat_key", ""), [])]
     if answer.strip().lower() in said:  # la misma respuesta otra vez: se pide distinta
