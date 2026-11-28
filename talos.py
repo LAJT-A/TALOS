@@ -2342,7 +2342,7 @@ def has_swearing(answer):
 def is_casual(session):
     """Si es uno de los chats donde el bot puede hablar con jerga y groserias (BOT_CASUAL)."""
     if session.get("is_group"):
-        names = session.get("who", "").split(" in ", 1)[-1]
+        names = session.get("who", "").split(" in ", 1)[-1] + " " + whatsapp.title_of(session.get("chat_key", ""))
     else:
         names = f"{session.get('who', '')} {session.get('name', '')} {session.get('contact', '')}"
     plain = comandos._strip(names.lower())
@@ -2846,7 +2846,7 @@ def bot_worker():
                 continue
             if kind == "start":
                 if not session:
-                    who = m["who"] if not m["from_me"] else "this chat"
+                    who = m["who"] if not m["from_me"] else f"chat {m['who']}"
                     session = bot_chats[key] = {"chat": m["chat"], "name": m["name"] or "friend",
                                                 "who": who, "history": [], "last": time.time(),
                                                 "contact": m.get("contact", ""), "is_group": m["is_group"],
