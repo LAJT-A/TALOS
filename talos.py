@@ -71,6 +71,7 @@ BOT_MINUTES = 30
 FAMILY = {}  # tu familia en WhatsApp (nombre como lo tienes guardado: como se llama para ti)
 FAMILY_WORDS = r"\b(mam[aá]|mami|madre|pap[aá]|papi|t[ií]a|t[ií]o|abuel[ao]|prim[ao]|madrina|padrino|familia)\b"  # o si el contacto se llama asi
 BOT_CASUAL = []  # SOLO con estos (grupos o contactos) habla con jerga y groserias; con los demas, normal y educado
+BOT_SHARED_NOTES = ""  # p. ej. "panas.txt" en bot_memoria: lo que sabe de tus panas: lo usa en TODOS los chats con jerga (BOT_CASUAL)
 BOT_SWEARING = False                    # el bot habla como un pana: groserías, jerga y chalequeo permitidos
 BOT_WINDOW = True                       # ventana aparte con los chats del bot (False: solo esta consola)
 BOT_SIGNATURES = {}  # firma al final de cada respuesta del bot a esa persona
@@ -2241,6 +2242,9 @@ def bot_context(session, m, text):
     key = whatsapp.key_of(m["chat"])
     parts = []
     memory = bot_memory(key, whatsapp.title_of(key) or m.get("who", ""))
+    shared = shared_notes() if is_casual(session) else ""
+    if shared and shared[:300] not in memory:
+        memory = (shared + ("\n\nNOTAS DE ESTE CHAT:\n" + memory if memory else ""))[:7000]
     if m.get("quoted_id"):
         window = whatsapp.around(key, m["quoted_id"])
         if window:
@@ -2257,10 +2261,31 @@ def bot_context(session, m, text):
         parts.append("The latest messages in this chat, with everyone (lines from 'Talos (bot)' are yours: "
                      "keep the thread, remember what you already told each person, and do not repeat "
                      "yourself):\n" + whatsapp.lines(last))
-    context = "\n\n".join(parts)[-(9500 - len(memory)):]  # que quepa en lo que la IA puede leer
-    if memory:  # las notas van siempre completas
-        context = "What you know about this chat (your notes):\n" + memory + "\n\n" + context
+    context = "\n\n".join(parts)[-max(3000, 11000 - len(memory)):]  # que quepa en lo que la IA puede leer
+    if memory:  # las notas van siempre completas, y separadas de lo que cambia
+        context = memory + NOTES_MARK + context
     return context
+
+
+NOTES_MARK = "\n<<<NOTES_END>>>\n"
+
+
+def shared_notes():
+    """Las notas de tus panas (BOT_SHARED_NOTES) mas lo que ha ido aprendiendo."""
+    if not BOT_SHARED_NOTES:
+        return ""
+    path = os.path.join(BOT_MEMORY_DIR, BOT_SHARED_NOTES)
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()[:6000]
+    except OSError:
+        return ""
+    try:
+        with open(path[:-4] + ".auto.txt", encoding="utf-8") as f:
+            text += "\n\nLO QUE HAS IDO APRENDIENDO (lo mas nuevo al final):\n" + f.read()[-2500:]
+    except OSError:
+        pass
+    return text
 
 
 def bot_memory(chat_key, title=""):
@@ -2430,7 +2455,11 @@ def learn_round():
             continue
         path = memory_path(chat_key, title)
         if not os.path.exists(path):
-            continue  # solo los chats que ya tienen notas
+            if not BOT_SHARED_NOTES or not is_casual({"who": title, "name": title, "contact": title}):
+                continue  # solo los chats que tienen notas, o los de tus panas
+            path = os.path.join(BOT_MEMORY_DIR, BOT_SHARED_NOTES)  # lo de los panas va a sus notas comunes
+            if not os.path.exists(path):
+                continue
         since = state.get(chat_key) or int(time.time()) - 2 * 86400
         rows = whatsapp.since(chat_key, since, 600)
         if len(rows) < LEARN_EVERY:
@@ -2630,8 +2659,8 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
                  "them, like a well-mannered assistant talking to their boss's family: no swear words at all "
                  "(no marico, coño, verga, mamagüevo or similar), no crude jokes, no teasing, and always speak "
                  f"of {owner} with respect. ")
-    system = (style +f"You are Talos, also called Jarvis, the personal AI assistant of {owner}. You are chatting on "
-              f"WhatsApp with {session['name']}, a contact of {owner}. "
+    system = (f"You are Talos, also called Jarvis, the personal AI assistant of {owner}, chatting on WhatsApp "
+              f"with contacts of {owner}. "
               + (f"About {owner}: {OWNER_INFO} " if OWNER_INFO else "") +
               f" Reply in the same language they write in, "
               "short and natural like a WhatsApp message, friendly, with a bit of humor. You cannot do anything on "
@@ -2668,6 +2697,11 @@ def bot_reply(session, text, picture=None, context="", may_skip=False):
               "agent: no 'claro que sí', no 'con gusto', no summaries, no explaining the joke. A person may send "
               "one idea split into several short messages: they arrive joined with line breaks, answer them "
               "as one thing, once."
+              )
+    notes, _, context = context.partition(NOTES_MARK) if NOTES_MARK in context else ("", "", context)
+    if notes:
+        system += "\n\nWHAT YOU KNOW (your notes; you already know all this, no need to look it up):\n" + notes
+    system += ("\n\nNOW: " + style + f"You are talking with {session['name']}."
               + sticker_prompt(casual)
               + (" This is a GROUP: only say something when it is really needed (they talk to you, ask you "
                  "something, mention you or it is clearly your turn). If the last message is just chatter, "
